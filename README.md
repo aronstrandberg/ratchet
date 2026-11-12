@@ -1,15 +1,14 @@
 # Ratchet
 
-Tracks my OpenCode work as a tree of tasks, attaches the pull requests,
-tickets and threads each task touches, and wakes the session or person who
-acts next.
+Tracks my OpenCode work as a tree of tasks, attaches the pull requests, tickets
+and threads each task touches, and wakes the session or person who acts next.
 
 The design is in [docs/design.md](docs/design.md). So far it mirrors the
 OpenCode session tree into tasks.
 
-It runs on [celld](https://celld.dev) on my dev VM, written in TypeScript
-with Effect v4: `hub` holds the tasks as typed actors, and `gateway` holds
-every connection to the outside.
+It runs on [celld](https://celld.dev) on my dev VM, written in TypeScript with
+Effect v4: `hub` holds the tasks as typed actors, and `gateway` holds every
+connection to the outside.
 
 ## Run it
 

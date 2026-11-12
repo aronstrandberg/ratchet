@@ -74,10 +74,10 @@ flowchart LR
   OC --> COL
 ```
 
-Dashed parts come later. Every external system is reached through the
-gateway, OpenCode and GitHub included. Sessions call the hub as an MCP server on loopback.
-OpenCode sends the session ID with every tool call, so a tool never takes a
-session or task ID from the model.
+Dashed parts come later. Every external system is reached through the gateway,
+OpenCode and GitHub included. Sessions call the hub as an MCP server on
+loopback. OpenCode sends the session ID with every tool call, so a tool never
+takes a session or task ID from the model.
 
 ## Tasks
 
@@ -100,63 +100,62 @@ flowchart TD
   C --> E
 ```
 
-**Fork.** OpenCode's fork copies a session's history up to a message into a
-new session, which records the session it came from and the fork point in its
-`fork` field. By default
-the task forks with it: the forked session gets a new task, a child of the
-task that owns the original session. A fork I make in the desktop app and a
-fork the hub makes through the API produce the same event and the same
-result. The hub writes the task ID into the session's metadata, so the
-mapping is stored on both sides.
+**Fork.** OpenCode's fork copies a session's history up to a message into a new
+session, which records the session it came from and the fork point in its `fork`
+field. By default the task forks with it: the forked session gets a new task, a
+child of the task that owns the original session. A fork I make in the desktop
+app and a fork the hub makes through the API produce the same event and the same
+result. The hub writes the task ID into the session's metadata, so the mapping
+is stored on both sides.
 
 **Current task.** A session has one current task. What it does is recorded
 against that task: a PR it registers, a decision it raises, a resource it
-attaches. When a session starts on something else, its current task changes
-and the hub records the span of messages each task covered. So a session
-that did three things holds three tasks, and each task knows which part of
-the session was its own.
+attaches. When a session starts on something else, its current task changes and
+the hub records the span of messages each task covered. So a session that did
+three things holds three tasks, and each task knows which part of the session
+was its own.
 
-**Toward one task per session.** A session holding several tasks is the case
-to shrink. A session changes its current task with a tool. It also has a tool
-to fork, and instructions to fork when a significant task can be done
-separately. The orchestrator forks too, on its own: when a session's current
-task changes, it can fork the session at that message, so the new task
-continues in a session of its own. A wake-up names the task it belongs to. When it arrives for a task
+**Toward one task per session.** A session holding several tasks is the case to
+shrink. A session changes its current task with a tool. It also has a tool to
+fork, and instructions to fork when a significant task can be done separately.
+The orchestrator forks too, on its own: when a session's current task changes,
+it can fork the session at that message, so the new task continues in a session
+of its own. A wake-up names the task it belongs to. When it arrives for a task
 that is not the session's current one, that is a second point to fork.
 
-**Correcting a link.** The automatic links are sometimes wrong: a fork made
-to try another approach to the same task gets a new task by default, or a
-session is filed under the wrong project. Changing a session's current task,
-or which task a span belongs to, fixes that.
+**Correcting a link.** The automatic links are sometimes wrong: a fork made to
+try another approach to the same task gets a new task by default, or a session
+is filed under the wrong project. Changing a session's current task, or which
+task a span belongs to, fixes that.
 
 Compaction keeps the same session and changes nothing here.
 
-**Linear.** A project maps to a group task, an issue to a task, a sub-issue
-to a child task. A fork starts with no Linear entity. Creating one stays a
-proposal, as decided for all new issues.
+**Linear.** A project maps to a group task, an issue to a task, a sub-issue to a
+child task. A fork starts with no Linear entity. Creating one stays a proposal,
+as decided for all new issues.
 
-**Subagent sessions** are the ones with a `parentID`. They never start a
-task. A running subagent is recorded on the task of the main session it
-works for, however deep it nests, with a kind: `working`, or `watching` for
-one that monitors something and does no work on the task. The hub sees a
-subagent start and stop. Only the owning session knows what it is for, so the
-session declares the kind with a tool. Long implementation work is meant to
-happen in main sessions that the orchestrator manages, so subagents get this
-lighter record and no task of their own.
+**Subagent sessions** are the ones with a `parentID`. They never start a task. A
+running subagent is recorded on the task of the main session it works for,
+however deep it nests, with a kind: `working`, or `watching` for one that
+monitors something and does no work on the task. The hub sees a subagent start
+and stop. Only the owning session knows what it is for, so the session declares
+the kind with a tool. Long implementation work is meant to happen in main
+sessions that the orchestrator manages, so subagents get this lighter record and
+no task of their own.
 
 **What the state says.** The tag is derived from the task's details, in this
-order: an open question form or permission request makes it `NeedsMe`, a
-running main session or a working subagent makes it `Working`, a subagent
-that only watches makes it `Watching`, and otherwise it is `Idle`. A
-question wins over running work, so a task whose subagent runs while the main
-agent waits on me reads `NeedsMe`.
+order: an open question form or permission request makes it `NeedsMe`, a running
+main session or a working subagent makes it `Working`, a subagent that only
+watches makes it `Watching`, and otherwise it is `Idle`. A question wins over
+running work, so a task whose subagent runs while the main agent waits on me
+reads `NeedsMe`.
 
 ## Resources
 
 Every external thing is a resource cell, keyed by a canonical reference. The
-cell holds the latest known facts, the tasks attached to it and their
-relation, and for an exclusive kind its one owner. Attaching subscribes the
-task to the resource's changes.
+cell holds the latest known facts, the tasks attached to it and their relation,
+and for an exclusive kind its one owner. Attaching subscribes the task to the
+resource's changes.
 
 | Kind | Key | Facts arrive by | Read by | Exclusive |
 | --- | --- | --- | --- | --- |
@@ -166,16 +165,15 @@ task to the resource's changes.
 | incident.io incident | incident ID | Polling | Gateway | No |
 | Other link | URL | Nothing | Nothing | No |
 
-Uniqueness needs no lock: the resource cell handles one message at a time, so
-it refuses a second owner itself.
+Uniqueness needs no lock: the resource cell handles one message at a time, so it
+refuses a second owner itself.
 
 ## From GitHub frames to wake-ups
 
-One push to a PR in the monorepo produces about a hundred frames: each of
-some 46 checks starts and finishes, bots post and edit comments, and the
-session's own replies appear under my login. A wake-up costs a model turn, so
-most of this must not wake anything. Three layers reduce it, and none is a
-free-form filter.
+One push to a PR in the monorepo produces about a hundred frames: each of some
+46 checks starts and finishes, bots post and edit comments, and the session's
+own replies appear under my login. A wake-up costs a model turn, so most of this
+must not wake anything. Three layers reduce it, and none is a free-form filter.
 
 | Layer | Turns | Into | How |
 | --- | --- | --- | --- |
@@ -198,10 +196,9 @@ free-form filter.
 
 The CI rows are mechanical and cover most frames. The comment rows are
 heuristics about authors and text. `lov pr watch` has tuned such rules in Go
-(`go/cli/internal/commands/pr` in the monorepo), which can't be imported
-here. Start with the CI machine and a short list of bot authors, measure
-wake-ups per PR from the traces, and add a comment rule when the traces show
-its noise.
+(`go/cli/internal/commands/pr` in the monorepo), which can't be imported here.
+Start with the CI machine and a short list of bot authors, measure wake-ups per
+PR from the traces, and add a comment rule when the traces show its noise.
 
 ## Cells
 
@@ -230,27 +227,25 @@ token for its MCP resource does. Read from its source, not tested.
 
 ## The gateway
 
-A second worker that holds every outside connection and credential. It
-has one adapter per provider, and each adapter offers the same three
-operations: read a resource, watch a set of resources, and write. Whether an
-adapter calls a REST API, a GraphQL API or the provider's MCP server is
-private to it. The hub knows typed references and facts, holds no
-credential and makes no outbound call, so it can be tested against a fake
-gateway.
+A second worker that holds every outside connection and credential. It has one
+adapter per provider, and each adapter offers the same three operations: read a
+resource, watch a set of resources, and write. Whether an adapter calls a REST
+API, a GraphQL API or the provider's MCP server is private to it. The hub knows
+typed references and facts, holds no credential and makes no outbound call, so
+it can be tested against a fake gateway.
 
 Watching differs per provider only inside the adapter: the OpenCode adapter
 holds its event stream, the GitHub adapter holds the webhook proxy stream and
 reads after a frame, and the others poll. An adapter that holds a stream is a
 Durable Object in the gateway, with an alarm that reconnects it.
 
-The one inbound path that skips the gateway is a session calling the hub's
-own MCP tools.
+The one inbound path that skips the gateway is a session calling the hub's own
+MCP tools.
 
-Later the gateway can also be the MCP proxy sessions use for these
-providers. That would let the hub attach a resource when a session first
-touches it and apply policy to writes. It also makes the gateway a single
-point of failure for session tools, so that step waits until the gateway has
-run for a while.
+Later the gateway can also be the MCP proxy sessions use for these providers.
+That would let the hub attach a resource when a session first touches it and
+apply policy to writes. It also makes the gateway a single point of failure for
+session tools, so that step waits until the gateway has run for a while.
 
 ## Runtime
 
@@ -266,32 +261,31 @@ run for a while.
   celld node needs a cloud bucket.
 - A lone node waits for its store on every write.
 - celld v0.6.2 is beta. Some upgrades need the node stopped.
-- `@opencode/plugin` pins `effect` 4.1.0 and the cells need 4.1.4 or later.
-  The Desktop panel's plugin calls the hub over HTTP and shares only schemas.
-- Alchemy deploys to Cloudflare's API and has nothing to manage while
-  everything is local.
+- `@opencode/plugin` pins `effect` 4.1.0 and the cells need 4.1.4 or later. The
+  Desktop panel's plugin calls the hub over HTTP and shares only schemas.
+- Alchemy deploys to Cloudflare's API and has nothing to manage while everything
+  is local.
 
 ## Telemetry
 
 One OpenTelemetry Collector on the VM, started by Nix, receiving OTLP on
 loopback from three senders: the cells (`effect/observability`), celld itself
 (`CELLD_OTEL=http://127.0.0.1:4318`) and OpenCode (the standard
-`OTEL_EXPORTER_OTLP_*` variables, which its binary references; undocumented
-and untested). Cluster envelopes carry trace and span IDs, so one trace
-follows an event across cells. The collector writes to a ClickHouse on the
-VM, so a session can query traces with SQL.
+`OTEL_EXPORTER_OTLP_*` variables, which its binary references; undocumented and
+untested). Cluster envelopes carry trace and span IDs, so one trace follows an
+event across cells. The collector writes to a ClickHouse on the VM, so a session
+can query traces with SQL.
 
 ## First iteration
 
-Mirror the session tree. The gateway's OpenCode adapter holds the event
-stream and sends session facts to the hub. The hub makes a task for each
-session and a child task for each fork, tracks `Active` and
-`Waiting` from execution events, writes the task ID into session metadata,
-survives a restart, answers one query that returns the tree, and traces all
-of it to the local collector. This touches celld, both workers and
-the binding between them, the cluster classes, `effect-machine`, an outbound
-stream, OpenCode's API and telemetry, and no other provider. The second
-iteration adds the GitHub adapter.
+Mirror the session tree. The gateway's OpenCode adapter holds the event stream
+and sends session facts to the hub. The hub makes a task for each session and a
+child task for each fork, tracks `Active` and `Waiting` from execution events,
+writes the task ID into session metadata, survives a restart, answers one query
+that returns the tree, and traces all of it to the local collector. This touches
+celld, both workers and the binding between them, the cluster classes,
+`effect-machine`, an outbound stream, OpenCode's API and telemetry, and no other
+provider. The second iteration adds the GitHub adapter.
 
 ## Built so far
 
@@ -313,37 +307,37 @@ iteration adds the GitHub adapter.
 
 Differences from the design above, found while building:
 
-- `celld dev` runs one script. The hub and the gateway are two entrypoints
-  of that script, bound to each other with service bindings. They become two
+- `celld dev` runs one script. The hub and the gateway are two entrypoints of
+  that script, bound to each other with service bindings. They become two
   deployments on a real celld node.
 - A trace does not cross cells yet. Spans inside an entity's Durable Object
   start a new trace, and so does the hub when the gateway calls it. The trace
   context has to be passed along by hand.
 - A fork starts in the directory of the session it came from. The tool's
   instructions tell the caller to have the fork make its own worktree.
-- A session that changes task does not record which messages belonged to
-  which task. OpenCode sends the session ID with a tool call, not the message.
+- A session that changes task does not record which messages belonged to which
+  task. OpenCode sends the session ID with a tool call, not the message.
 - Archived and deleted sessions are not handled. Their tasks stay.
-- A pull request stays with the task that attached it. When the session moves
-  to a new task, its pull requests do not move along.
+- A pull request stays with the task that attached it. When the session moves to
+  a new task, its pull requests do not move along.
 - A wake-up is delivered at least once. OpenCode can admit the message and the
   hub can fail before it records that, and then the session gets it twice.
-- The poller reads each pull request in full every minute, one after the
-  other. That is 60 GraphQL calls an hour for each pull request, against a
-  limit of 5,000 points an hour.
-- GitHub answers the first read of a pull request with mergeability
-  `unknown`. The gateway reads once more after two seconds.
+- The poller reads each pull request in full every minute, one after the other.
+  That is 60 GraphQL calls an hour for each pull request, against a limit of
+  5,000 points an hour.
+- GitHub answers the first read of a pull request with mergeability `unknown`.
+  The gateway reads once more after two seconds.
 - The first observation of a pull request reports no changes. A session that
-  registers a pull request whose CI already failed has to read that itself,
-  with `pr_list`.
-- The index is written by the code that applies a fact, after the cell
-  answers. A failed write leaves a stale row until the task changes again.
+  registers a pull request whose CI already failed has to read that itself, with
+  `pr_list`.
+- The index is written by the code that applies a fact, after the cell answers.
+  A failed write leaves a stale row until the task changes again.
 - A snapshot of 146 sessions takes about 40 seconds on a clean start, because
   each cell write waits for the local store. Later snapshots send only what
   changed.
 - OpenCode's port changes when its service restarts. `scripts/dev-vars.sh`
-  rewrites `.dev.vars` from the service's registration file, and a systemd
-  path unit runs it when that file changes.
+  rewrites `.dev.vars` from the service's registration file, and a systemd path
+  unit runs it when that file changes.
 
 ## Open
 
