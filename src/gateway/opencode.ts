@@ -308,3 +308,15 @@ export const fork = (config: Config, id: string, title: string, prompt: string):
     yield* post(`/api/session/${forked.data.id}/prompt`, { text: prompt })
     return forked.data.id
   }).pipe(Effect.provide(FetchHttpClient.layer), Effect.withSpan("OpenCode.fork"))
+
+/**
+ * Puts a message into a session and lets it run. OpenCode admits the message durably, so it survives a restart.
+ */
+export const wake = (config: Config, id: string, text: string): Effect.Effect<void, unknown> =>
+  Effect.gen(function* () {
+    const http = yield* client(config)
+    yield* HttpClientRequest.post(`/api/session/${id}/synthetic`).pipe(
+      HttpClientRequest.bodyJsonUnsafe({ text, description: "Ratchet notification", metadata: { ratchet: true } }),
+      http.execute,
+    )
+  }).pipe(Effect.provide(FetchHttpClient.layer), Effect.withSpan("OpenCode.wake"))

@@ -1,6 +1,9 @@
 import { WorkerEntrypoint } from "cloudflare:workers"
 import { Effect } from "effect"
 import type { Env } from "../env.ts"
+import type { PullRequestRef } from "../protocol/pull-request.ts"
+import * as GitHub from "./github.ts"
+import type { PollerStatus } from "./github-poller.ts"
 import * as OpenCode from "./opencode.ts"
 import type { StreamStatus } from "./opencode-stream.ts"
 
@@ -21,6 +24,18 @@ export class Gateway extends WorkerEntrypoint<Env> {
     await Effect.runPromise(
       Effect.flatMap(OpenCode.read(config, session), (info) => OpenCode.recordTask(config, info, task)),
     )
+  }
+
+  /** Reads a pull request now, hands it to the hub, and keeps the poller running. */
+  async observePullRequest(ref: PullRequestRef): Promise<PollerStatus> {
+    const facts = await Effect.runPromise(GitHub.readSettled(this.env.GITHUB_TOKEN, ref))
+    await this.env.HUB.pullRequestFacts(facts)
+    return this.env.GITHUB_POLLER.getByName("default").ensure()
+  }
+
+  /** Puts a message into a session and lets it run. */
+  async wake(session: string, text: string): Promise<void> {
+    await Effect.runPromise(OpenCode.wake(this.#opencode, session, text))
   }
 
   /** Forks a session, names the fork and prompts it. Returns the fork's session ID. */

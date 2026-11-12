@@ -54,3 +54,17 @@ export const PullRequestFacts = Schema.Struct({
   viewer: Schema.String,
 })
 export type PullRequestFacts = typeof PullRequestFacts.Type
+
+/** The key a pull request is known by across the hub: `owner/repo#number`, lowercased. */
+export const pullRequestKey = (ref: PullRequestRef) => `${ref.owner}/${ref.repo}#${ref.number}`.toLowerCase()
+
+/**
+ * What a pull request is to a task. `owns`: the task's session drives it to mergeable. `waits_on`: the task
+ * needs it merged and does not work on it. `context`: related, and nothing about it should wake anyone.
+ */
+export const Relation = Schema.Literals(["owns", "waits_on", "context"])
+export type Relation = typeof Relation.Type
+
+/** What a session says about its own work on a pull request. */
+export const WorkStatus = Schema.Literals(["unassigned", "agent-working", "waiting-ci", "waiting-user", "blocked", "ready"])
+export type WorkStatus = typeof WorkStatus.Type

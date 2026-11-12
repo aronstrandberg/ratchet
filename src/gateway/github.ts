@@ -150,3 +150,15 @@ export const read = (token: string, ref: PullRequestRef): Effect.Effect<PullRequ
     Effect.provide(FetchHttpClient.layer),
     Effect.withSpan("GitHub.read", { attributes: { "github.pr": `${ref.owner}/${ref.repo}#${ref.number}` } }),
   )
+
+/**
+ * Reads a pull request, and reads it once more when GitHub has not worked out yet whether it merges cleanly.
+ *
+ * GitHub computes mergeability on demand: the first read of a pull request often says `unknown`.
+ */
+export const readSettled = (token: string, ref: PullRequestRef): Effect.Effect<PullRequestFacts, GitHubError> =>
+  Effect.flatMap(read(token, ref), (facts) =>
+    facts.state === "open" && facts.mergeable === "unknown"
+      ? Effect.andThen(Effect.sleep("2 seconds"), read(token, ref))
+      : Effect.succeed(facts),
+  )

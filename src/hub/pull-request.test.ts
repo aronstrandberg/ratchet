@@ -26,7 +26,7 @@ const check = (name: string, state: Check["state"], required = true): Check => (
 const observe = (...observations: ReadonlyArray<PullRequestFacts>) =>
   Effect.runPromise(
     Effect.gen(function* () {
-      let state: PullRequestState = PullRequestState.Unseen
+      let state: PullRequestState = PullRequestState.Unseen({ subscribers: [] })
       const all: Array<ReadonlyArray<string>> = []
       for (const observation of observations) {
         const next: PullRequestState = yield* Machine.replay(pullRequestMachine, [PullRequestEvent.Observed({ facts: observation })], { from: state })

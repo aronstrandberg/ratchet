@@ -8,6 +8,7 @@ export {
   ClusterWorkflow,
 } from "@effect/platform-cloudflare/CloudflareDurableObjects"
 export { Gateway } from "./gateway/entrypoint.ts"
+export { GitHubPoller } from "./gateway/github-poller.ts"
 export { OpenCodeStream } from "./gateway/opencode-stream.ts"
 export { Hub } from "./hub/entrypoint.ts"
 
@@ -19,6 +20,8 @@ export default {
         return Response.json(await env.HUB.tree())
       case "/mcp":
         return Mcp.handle(env, request)
+      case "/prs":
+        return Response.json(await env.HUB.pullRequests())
       case "/gateway/opencode":
         return Response.json(await env.GATEWAY.watchOpenCode())
       default:

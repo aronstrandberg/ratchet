@@ -4,6 +4,7 @@ import { EntityMachine } from "effect-machine/cluster"
 import type { Env } from "../env.ts"
 import * as Telemetry from "../telemetry.ts"
 import * as Persistence from "./persistence.ts"
+import { PullRequestEntity, pullRequestMachine } from "./pull-request.ts"
 import { SessionEntity, sessionMachine } from "./session.ts"
 import { TaskEntity, taskMachine } from "./task.ts"
 
@@ -13,17 +14,22 @@ const layer = (env: Env) =>
   Layer.mergeAll(
     EntityMachine.layer(TaskEntity, taskMachine, journal),
     EntityMachine.layer(SessionEntity, sessionMachine, journal),
+    EntityMachine.layer(PullRequestEntity, pullRequestMachine, journal),
   ).pipe(
     Layer.provide(
       Persistence.layerSqlite(
-        { Task: Persistence.journaled(taskMachine), Session: Persistence.journaled(sessionMachine) },
+        {
+          Task: Persistence.journaled(taskMachine),
+          Session: Persistence.journaled(sessionMachine),
+          PullRequest: Persistence.journaled(pullRequestMachine),
+        },
         CloudflareCluster.DurableObjectSqlClient.orDie,
       ),
     ),
     Layer.provideMerge(Telemetry.layer(env, "ratchet-hub")),
     Layer.provideMerge(
       CloudflareCluster.layer({
-        entities: [TaskEntity, SessionEntity],
+        entities: [TaskEntity, SessionEntity, PullRequestEntity],
         entityNamespace: env.CLUSTER_ENTITY,
         workflowNamespace: env.CLUSTER_WORKFLOW,
         queueNamespace: env.CLUSTER_QUEUE,

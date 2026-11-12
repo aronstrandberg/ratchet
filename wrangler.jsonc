@@ -9,7 +9,8 @@
       { "name": "CLUSTER_WORKFLOW", "class_name": "ClusterWorkflow" },
       { "name": "CLUSTER_QUEUE", "class_name": "ClusterDurableQueue" },
       { "name": "CLUSTER_SINGLETON", "class_name": "ClusterSingleton" },
-      { "name": "OPENCODE_STREAM", "class_name": "OpenCodeStream" }
+      { "name": "OPENCODE_STREAM", "class_name": "OpenCodeStream" },
+      { "name": "GITHUB_POLLER", "class_name": "GitHubPoller" }
     ]
   },
   "migrations": [
@@ -17,13 +18,15 @@
       "tag": "v1",
       "new_sqlite_classes": ["ClusterEntity", "ClusterWorkflow", "ClusterDurableQueue", "ClusterSingleton"]
     },
-    { "tag": "v2", "new_sqlite_classes": ["OpenCodeStream"] }
+    { "tag": "v2", "new_sqlite_classes": ["OpenCodeStream"] },
+    { "tag": "v3", "new_sqlite_classes": ["GitHubPoller"] }
   ],
   // celld dev runs one script, so the hub and the gateway are two entrypoints of it.
   "services": [
     { "binding": "HUB", "service": "ratchet", "entrypoint": "Hub" },
     { "binding": "GATEWAY", "service": "ratchet", "entrypoint": "Gateway" }
   ],
-  "vars": { "OTLP_URL": "http://127.0.0.1:14318" },
+  // WAKE_SESSIONS: which sessions may be woken. "*" is all, "" is none, or session IDs separated by commas.
+  "vars": { "OTLP_URL": "http://127.0.0.1:14318", "WAKE_SESSIONS": "" },
   "d1_databases": [{ "binding": "INDEX", "database_name": "ratchet-index", "database_id": "ratchet-index" }]
 }
