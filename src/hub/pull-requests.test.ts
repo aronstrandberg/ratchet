@@ -164,3 +164,18 @@ test("a wake-up for an earlier task says the session now works on another one", 
       expect(sent[0]).toContain('It belongs to "ses_later", a task you worked on before the one you work on now.')
     }),
   ))
+
+test("a task that waited on me for a pull request stops needing me once it merges", () =>
+  run(
+    Effect.gen(function* () {
+      yield* open("ses_asker")
+      yield* PullRequests.register(noIndex, "ses_asker", ref, "owns")
+      yield* PullRequests.observe(noIndex, facts(), everyone)
+      yield* PullRequests.setStatus(noIndex, "ses_asker", ref, "waiting-user", "Please merge.")
+      expect((yield* Commands.current("ses_asker")).state).toBe("NeedsMe")
+
+      // The session may not be woken, and the task still learns that the pull request ended.
+      yield* PullRequests.observe(noIndex, facts({ state: "merged" }), () => false)
+      expect((yield* Commands.current("ses_asker")).state).toBe("Idle")
+    }),
+  ))

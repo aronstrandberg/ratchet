@@ -10,6 +10,7 @@ import {
   changes,
   describe,
   failedChecks,
+  outcomeOf,
   wakes,
 } from "./pull-request.ts"
 import { SessionEntity, boundTask } from "./session.ts"
@@ -198,6 +199,14 @@ export const observe = (db: Index.Database, facts: PullRequestFacts, mayWake: (s
     const queued: Array<string> = []
     const tasks = yield* TaskEntity.client
     const sessions = yield* SessionEntity.client
+    const outcome = outcomeOf(after)
+
+    // Every follower learns that it ended, whether or not its session is woken.
+    if (outcome !== null && found.length > 0) {
+      for (const subscriber of after.subscribers) {
+        yield* sendTask(db, subscriber.task, TaskEvent.ResourceEnded({ resource: key, outcome }))
+      }
+    }
 
     for (const subscriber of after.subscribers) {
       const relevant = found.filter((change) => wakes(subscriber.relation, change))

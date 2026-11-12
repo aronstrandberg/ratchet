@@ -75,3 +75,8 @@ export type Relation = typeof Relation.Type
 export const WorkStatus = Schema.Literals(["unassigned", "agent-working", "waiting-ci", "waiting-user", "blocked", "ready"])
 
 export type WorkStatus = typeof WorkStatus.Type
+
+/** How a pull request ended. Nothing more happens to it after that. */
+export const Outcome = Schema.Literals(["merged", "closed"])
+
+export type Outcome = typeof Outcome.Type

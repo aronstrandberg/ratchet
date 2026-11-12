@@ -16,7 +16,14 @@ const TaskDetail = Schema.Struct({
   questions: Schema.Array(Schema.Struct({ id: Schema.String, kind: Schema.String, title: Schema.String })),
   // Rows of tasks that never followed a resource lack the next two keys.
   attachments: Schema.Array(
-    Schema.Struct({ resource: Schema.String, relation: Schema.String, status: Schema.String, note: Schema.String }),
+    Schema.Struct({
+      resource: Schema.String,
+      relation: Schema.String,
+      status: Schema.String,
+      note: Schema.String,
+      /** `merged` or `closed` once the resource has ended. */
+      ended: Schema.NullOr(Schema.String).pipe(Schema.withDecodingDefaultKey(Effect.succeed(null))),
+    }),
   ).pipe(Schema.withDecodingDefaultKey(Effect.succeed([]))),
   /** Wake-ups that have not reached a session yet. */
   undelivered: Schema.Number.pipe(Schema.withDecodingDefaultKey(Effect.succeed(0))),
@@ -100,7 +107,13 @@ export const put = (db: Database, id: string, state: TaskState): Effect.Effect<v
     running: state.running,
     subagents: state.subagents.map(({ session, kind }) => ({ session, kind })),
     questions: state.questions.map(({ id, kind, title }) => ({ id, kind, title })),
-    attachments: state.attachments.map(({ resource, relation, status, note }) => ({ resource, relation, status, note })),
+    attachments: state.attachments.map(({ resource, relation, status, note, ended }) => ({
+      resource,
+      relation,
+      status,
+      note,
+      ended,
+    })),
     undelivered: state.outbox.length,
   }).pipe(
     Effect.mapError(failed("put")),

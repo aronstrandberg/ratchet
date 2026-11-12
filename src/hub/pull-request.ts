@@ -1,7 +1,7 @@
 import { Schema } from "effect"
 import { Event, Machine, State } from "effect-machine"
 import { toEntity } from "effect-machine/cluster"
-import { Check, PullRequestFacts, PullRequestRef, Relation, Review, Thread } from "../protocol/pull-request.ts"
+import { Check, type Outcome, PullRequestFacts, PullRequestRef, Relation, Review, Thread } from "../protocol/pull-request.ts"
 
 /**
  * Where CI stands on one head commit. It moves forward only: `Running`, then `Failing` once a check has failed
@@ -218,6 +218,16 @@ export const wakes = (relation: Relation, change: Change): boolean => {
 }
 
 const isEnd = Change.isAnyOf(["Merged", "Closed"])
+
+/** How a pull request ended, or null while it can still change. */
+export const outcomeOf = (state: PullRequestState): Outcome | null =>
+  PullRequestState.$match<Outcome | null>(state, {
+    Unseen: () => null,
+    Open: () => null,
+    Merged: () => "merged",
+    Closed: () => "closed",
+  })
+
 const needsNoAction = Change.isAnyOf(["ThreadResolved", "Queued", "HeadMoved"])
 
 const short = (head: string) => head.slice(0, 7)

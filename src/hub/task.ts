@@ -1,7 +1,7 @@
-import { Schema } from "effect"
+import { Effect, Schema } from "effect"
 import { Event, Machine, State } from "effect-machine"
 import { toEntity } from "effect-machine/cluster"
-import { Relation, WorkStatus } from "../protocol/pull-request.ts"
+import { Outcome, Relation, WorkStatus } from "../protocol/pull-request.ts"
 import { Question } from "../protocol/session.ts"
 
 /** A running subagent. `watching` marks one that monitors something and does no work on the task. */
@@ -13,13 +13,18 @@ const Subagent = Schema.Struct({
 
 const OpenQuestion = Schema.Struct({ ...Question.fields, session: Schema.String })
 
-/** A resource the task follows, with what the attaching session last said about its work on it. */
+/**
+ * A resource the task follows, with what the attaching session last said about its work on it.
+ *
+ * Once the resource has ended, `status` is history: it no longer says who has to act.
+ */
 const Attachment = Schema.Struct({
   resource: Schema.String,
   relation: Relation,
   session: Schema.String,
   status: WorkStatus,
   note: Schema.String,
+  ended: Schema.NullOr(Outcome).pipe(Schema.withDecodingDefaultKey(Effect.succeed(null))),
 })
 
 /** A message for one of the task's sessions that has not reached it yet. */
@@ -84,6 +89,7 @@ export const TaskEvent = Event({
   Detached: { resource: Schema.String },
   /** The attaching session says where its work on a resource stands. */
   StatusSet: { resource: Schema.String, status: WorkStatus, note: Schema.String },
+  ResourceEnded: { resource: Schema.String, outcome: Outcome },
   WakeQueued: { id: Schema.String, session: Schema.String, text: Schema.String },
   WakeDelivered: { id: Schema.String },
 })
@@ -102,7 +108,9 @@ const detailsOf = (state: Details): Details => ({
 })
 
 const settle = (details: Details) => {
-  const waitsOnMe = details.attachments.some((attachment) => attachment.status === "waiting-user")
+  const waitsOnMe = details.attachments.some(
+    (attachment) => attachment.ended === null && attachment.status === "waiting-user",
+  )
 
   if (details.questions.length > 0 || waitsOnMe) return TaskState.NeedsMe(details)
 
@@ -199,7 +207,14 @@ export const taskMachine = Machine.make({
       attachments: [
         ...without(state.attachments, (a) => a.resource === event.resource),
         // Attaching again keeps what the session reported about its work.
-        { resource: event.resource, relation: event.relation, session: event.session, status: known?.status ?? "unassigned", note: known?.note ?? "" },
+        {
+          resource: event.resource,
+          relation: event.relation,
+          session: event.session,
+          status: known?.status ?? "unassigned",
+          note: known?.note ?? "",
+          ended: null,
+        },
       ],
     })
   })
@@ -212,6 +227,12 @@ export const taskMachine = Machine.make({
       attachments: state.attachments.map((a) =>
         a.resource === event.resource ? { ...a, status: event.status, note: event.note } : a,
       ),
+    }),
+  )
+  .on(open, TaskEvent.ResourceEnded, ({ state, event }) =>
+    settle({
+      ...detailsOf(state),
+      attachments: state.attachments.map((a) => (a.resource === event.resource ? { ...a, ended: event.outcome } : a)),
     }),
   )
   .on(open, TaskEvent.WakeQueued, ({ state, event }) =>
