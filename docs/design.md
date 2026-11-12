@@ -304,8 +304,11 @@ iteration adds the GitHub adapter.
 | Session tree | A task per root session, a child task per fork |
 | Session metadata | The gateway writes `ratchet.task` into each session's metadata, once, least recently updated first |
 | Index | D1 table written after each task change. `GET /tree` returns the forest |
-| Session tools | The hub serves MCP at `/mcp` with Effect's `McpServer`, request-scoped, over the 2026-07-28 protocol: `task_current`, `task_start`, `task_fork`, `subagent_declare`. A tool takes the calling session from the request metadata OpenCode sends |
-| GitHub read | `src/gateway/github.ts` reads a pull request in one GraphQL call. `src/hub/pull-request.ts` turns two observations into typed changes, with CI reporting at most its first failure and its end per head. Not wired to tasks yet |
+| Session tools | The hub serves MCP at `/mcp` with Effect's `McpServer`, request-scoped, over the 2026-07-28 protocol. Task tools: `task_current`, `task_start`, `task_fork`, `subagent_declare`. Pull request tools: `pr_register`, `pr_set_status`, `pr_list`, `pr_unregister`. A tool takes the calling session from the request metadata OpenCode sends |
+| Pull requests | A session attaches a pull request to its task with a relation: `owns`, `waits_on` or `context`. A `PullRequest` cell holds what GitHub last said and which tasks follow it. `src/hub/pull-request.ts` turns two observations into typed changes, with CI reporting at most its first failure and its end per head |
+| GitHub adapter | `src/gateway/github.ts` reads a pull request in one GraphQL call, with a classic token. A Durable Object reads every followed, open pull request once a minute. It stands in for the webhook proxy stream |
+| Wake-ups | A change that a task can act on becomes a message in the task's outbox. The hub hands it to the gateway, which admits it to the session as a synthetic message, and the message leaves the outbox once OpenCode has it. `WAKE_SESSIONS` limits which sessions are woken, and is empty by default |
+| Work status | `pr_set_status` records what a session says about its work on a pull request. `waiting-user` turns the task to `NeedsMe` |
 | Tracing | Spans over OTLP to the local collector when `OTLP_URL` is set. The collector and ClickHouse are user services in `dotfiles-lovable/nix/ratchet.nix` |
 
 Differences from the design above, found while building:
@@ -321,6 +324,18 @@ Differences from the design above, found while building:
 - A session that changes task does not record which messages belonged to
   which task. OpenCode sends the session ID with a tool call, not the message.
 - Archived and deleted sessions are not handled. Their tasks stay.
+- A pull request stays with the task that attached it. When the session moves
+  to a new task, its pull requests do not move along.
+- A wake-up is delivered at least once. OpenCode can admit the message and the
+  hub can fail before it records that, and then the session gets it twice.
+- The poller reads each pull request in full every minute, one after the
+  other. That is 60 GraphQL calls an hour for each pull request, against a
+  limit of 5,000 points an hour.
+- GitHub answers the first read of a pull request with mergeability
+  `unknown`. The gateway reads once more after two seconds.
+- The first observation of a pull request reports no changes. A session that
+  registers a pull request whose CI already failed has to read that itself,
+  with `pr_list`.
 - The index is written by the code that applies a fact, after the cell
   answers. A failed write leaves a stale row until the task changes again.
 - A snapshot of 146 sessions takes about 40 seconds on a clean start, because
