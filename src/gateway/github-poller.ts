@@ -23,22 +23,28 @@ export class GitHubPoller extends DurableObject<Env> {
   /** Arms the next poll if none is armed. */
   async ensure(): Promise<PollerStatus> {
     if ((await this.ctx.storage.getAlarm()) === null) await this.ctx.storage.setAlarm(Date.now() + interval)
+
     return this.#status
   }
 
   override async alarm(): Promise<void> {
     await this.ctx.storage.setAlarm(Date.now() + interval)
     const env = this.env
+
     const poll = Effect.gen(function* () {
       const refs = yield* Effect.tryPromise(() => env.HUB.watchedPullRequests())
+
       for (const ref of refs) {
         const facts = yield* GitHub.readSettled(env.GITHUB_TOKEN, ref)
         yield* Effect.tryPromise(() => env.HUB.pullRequestFacts(facts))
       }
+
       // A wake-up that failed before gets another try.
       yield* Effect.tryPromise(() => env.HUB.deliverWakes())
+
       return refs.length
     }).pipe(Effect.withSpan("GitHubPoller.poll"), Effect.provide(Telemetry.layer(env, "ratchet-gateway")))
+
     const result = await Effect.runPromise(Effect.result(poll))
     this.#status =
       result._tag === "Success"

@@ -29,6 +29,7 @@ export const journaled = <S extends { readonly _tag: string }, E extends { reado
 
 /** A wake replays at most this many events before the journal is folded into a snapshot. */
 const compactOnLoad = 50
+
 /** A cell that never sleeps folds its journal after this many events. */
 const compactOnAppend = 200
 
@@ -59,6 +60,7 @@ export const layerSqlite = (
 ): Layer.Layer<PersistenceAdapter> => {
   const machineFor = (key: PersistenceKey) => {
     const machine = machines[key.entityType]
+
     return machine === undefined
       ? Effect.fail(new PersistenceError({ message: `no machine for entity type ${key.entityType}` }))
       : Effect.succeed({
@@ -67,6 +69,7 @@ export const layerSqlite = (
           event: Schema.toCodecJson(machine.event),
         })
   }
+
   const entity = (key: PersistenceKey) => `${key.entityType}/${key.entityId}`
   // On celld the database exists only inside an entity's Durable Object, so each call resolves it.
   const client = Effect.tap(database, tables)
@@ -74,25 +77,33 @@ export const layerSqlite = (
   const readSnapshot = (sql: SqlClient.SqlClient, key: PersistenceKey) =>
     Effect.gen(function* () {
       const { state } = yield* machineFor(key)
+
       const rows = yield* sql<{ state: string; version: number; timestamp: number }>`
         SELECT state, version, timestamp FROM machine_snapshot WHERE entity = ${entity(key)}`
+
       const row = rows[0]
+
       if (row === undefined) return Option.none<Snapshot<unknown>>()
       const decoded = yield* Schema.decodeUnknownEffect(state)(JSON.parse(row.state))
+
       return Option.some({ state: decoded, version: row.version, timestamp: row.timestamp })
     })
 
   const readEvents = (sql: SqlClient.SqlClient, key: PersistenceKey, after: number) =>
     Effect.gen(function* () {
       const { event } = yield* machineFor(key)
+
       const rows = yield* sql<{ event: string; version: number; timestamp: number }>`
         SELECT event, version, timestamp FROM machine_event
         WHERE entity = ${entity(key)} AND version > ${after} ORDER BY version`
+
       const events: Array<PersistedEvent<unknown>> = []
+
       for (const row of rows) {
         const decoded = yield* Schema.decodeUnknownEffect(event)(JSON.parse(row.event))
         events.push({ event: decoded, version: row.version, timestamp: row.timestamp })
       }
+
       return events
     })
 
@@ -113,12 +124,15 @@ export const layerSqlite = (
       const snapshot = yield* readSnapshot(sql, key)
       const events = yield* readEvents(sql, key, Option.match(snapshot, { onNone: () => 0, onSome: (s) => s.version }))
       const last = events.at(-1)
+
       if (last === undefined) return snapshot
       const from = Option.match(snapshot, { onNone: () => machine.initial, onSome: (s) => s.state })
+
       const state = yield* machine.replay(
         events.map((persisted) => persisted.event),
         from,
       )
+
       const folded = { state, version: last.version, timestamp: last.timestamp }
       yield* sql.withTransaction(
         Effect.andThen(
@@ -126,6 +140,7 @@ export const layerSqlite = (
           sql`DELETE FROM machine_event WHERE entity = ${entity(key)} AND version <= ${last.version}`,
         ),
       )
+
       return Option.some(folded)
     })
 
@@ -142,7 +157,9 @@ export const layerSqlite = (
     loadSnapshot: (key) =>
       Effect.gen(function* () {
         const sql = yield* client
+
         if ((yield* pending(sql, key)) > compactOnLoad) return yield* compact(sql, key)
+
         return yield* readSnapshot(sql, key)
       }).pipe(Effect.mapError(failed("load snapshot"))),
 
@@ -150,19 +167,24 @@ export const layerSqlite = (
       Effect.gen(function* () {
         const sql = yield* client
         const { event } = yield* machineFor(key)
+
         const rows = yield* sql<{ version: number | null }>`
           SELECT MAX(version) AS version FROM (
             SELECT version FROM machine_event WHERE entity = ${entity(key)}
             UNION ALL SELECT version FROM machine_snapshot WHERE entity = ${entity(key)})`
+
         const actual = rows[0]?.version ?? 0
+
         if (actual !== expectedVersion) {
           return yield* new VersionConflictError({ expected: expectedVersion, actual })
         }
+
         for (const persisted of events) {
           const encoded = JSON.stringify(yield* Schema.encodeUnknownEffect(event)(persisted.event))
           yield* sql`INSERT INTO machine_event (entity, version, event, timestamp)
             VALUES (${entity(key)}, ${persisted.version}, ${encoded}, ${persisted.timestamp})`
         }
+
         if ((yield* pending(sql, key)) >= compactOnAppend) yield* compact(sql, key)
       }).pipe(
         Effect.mapError((cause) => (cause instanceof VersionConflictError ? cause : failed("append events")(cause))),
@@ -173,5 +195,6 @@ export const layerSqlite = (
         Effect.mapError(failed("load events")),
       ),
   }
+
   return Layer.succeed(PersistenceAdapter, adapter)
 }

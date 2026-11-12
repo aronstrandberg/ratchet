@@ -28,11 +28,14 @@ export const register = (db: D1Database, session: string, ref: PullRequestRef, r
   Effect.gen(function* () {
     const task = yield* taskOf(session)
     const key = pullRequestKey(ref)
+
     const pullRequest = yield* (yield* PullRequestEntity.client)(key).Send({
       event: PullRequestEvent.Attached({ subscriber: { task, session, relation } }),
     })
+
     yield* Index.putPullRequest(db, key, pullRequest)
     yield* sendTask(db, task, TaskEvent.Attached({ resource: key, relation, session }))
+
     return { task, pullRequest: key }
   })
 
@@ -50,10 +53,13 @@ export const setStatus = (db: D1Database, session: string, ref: PullRequestRef, 
   Effect.gen(function* () {
     const task = yield* taskOf(session)
     const key = pullRequestKey(ref)
+
     if (!(yield* attachmentsOf(task)).some((attachment) => attachment.resource === key)) {
       return yield* new NotRegistered({ pullRequest: key })
     }
+
     yield* sendTask(db, task, TaskEvent.StatusSet({ resource: key, status, note }))
+
     return { task, pullRequest: key }
   })
 
@@ -65,6 +71,7 @@ export const unregister = (db: D1Database, session: string, ref: PullRequestRef)
     const pullRequest = yield* (yield* PullRequestEntity.client)(key).Send({ event: PullRequestEvent.Detached({ task }) })
     yield* Index.putPullRequest(db, key, pullRequest)
     yield* sendTask(db, task, TaskEvent.Detached({ resource: key }))
+
     return { task, pullRequest: key }
   })
 
@@ -74,6 +81,7 @@ export const list = (session: string) =>
     const task = yield* taskOf(session)
     const pullRequests = yield* PullRequestEntity.client
     const rows = []
+
     for (const attachment of yield* attachmentsOf(task)) {
       const state = yield* pullRequests(attachment.resource).GetState()
       rows.push({
@@ -95,6 +103,7 @@ export const list = (session: string) =>
             : { state: state._tag === "Unseen" ? ("unseen" as const) : state._tag === "Merged" ? ("merged" as const) : ("closed" as const) },
       })
     }
+
     return { task, pullRequests: rows }
   })
 
@@ -123,8 +132,10 @@ export const observe = (db: D1Database, facts: PullRequestFacts, mayWake: (sessi
     yield* Index.putPullRequest(db, key, after)
     const found = changes(before, after)
     const queued: Array<string> = []
+
     for (const subscriber of after.subscribers) {
       const relevant = found.filter((change) => wakes(subscriber.relation, change))
+
       if (relevant.length === 0 || !mayWake(subscriber.session)) continue
       yield* sendTask(
         db,
@@ -137,6 +148,7 @@ export const observe = (db: D1Database, facts: PullRequestFacts, mayWake: (sessi
       )
       queued.push(subscriber.task)
     }
+
     return { changes: found.map((change) => change._tag), queued }
   })
 
@@ -148,13 +160,17 @@ export const observe = (db: D1Database, facts: PullRequestFacts, mayWake: (sessi
 export const deliver = <E>(db: D1Database, task: string, wake: (session: string, text: string) => Effect.Effect<void, E>) =>
   Effect.gen(function* () {
     const state = yield* (yield* TaskEntity.client)(task).GetState()
+
     if (state._tag === "Unborn") return 0
     let delivered = 0
+
     for (const queued of state.outbox) {
       const sent = yield* Effect.result(wake(queued.session, queued.text))
+
       if (sent._tag === "Failure") continue
       yield* sendTask(db, task, TaskEvent.WakeDelivered({ id: queued.id }))
       delivered++
     }
+
     return delivered
   })

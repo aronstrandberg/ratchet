@@ -5,6 +5,7 @@ export const SessionOrigin = Schema.TaggedUnion({
   Root: {},
   Fork: { of: Schema.String },
 })
+
 export type SessionOrigin = typeof SessionOrigin.Type
 
 /** Something a session waits on me for: a question form or a permission request. */
@@ -13,6 +14,7 @@ export const Question = Schema.Struct({
   kind: Schema.Literals(["form", "permission"]),
   title: Schema.String,
 })
+
 export type Question = typeof Question.Type
 
 /**
@@ -39,6 +41,7 @@ export const SessionFact = Schema.TaggedUnion({
   Asked: { of: Schema.String, question: Question },
   Answered: { of: Schema.String, id: Schema.String },
 })
+
 export type SessionFact = typeof SessionFact.Type
 
 /** The task a main session works on, as the hub decided it. */

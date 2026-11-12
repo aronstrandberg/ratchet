@@ -36,6 +36,7 @@ const details = {
   attachments: Schema.Array(Attachment),
   outbox: Schema.Array(Wake),
 }
+
 type Details = Schema.Struct.Type<typeof details>
 
 /**
@@ -49,6 +50,7 @@ export const TaskState = State({
   Watching: details,
   Idle: details,
 })
+
 export type TaskState = typeof TaskState.Type
 
 export const TaskEvent = Event({
@@ -96,11 +98,15 @@ const detailsOf = (state: Details): Details => ({
 
 const settle = (details: Details) => {
   const waitsOnMe = details.attachments.some((attachment) => attachment.status === "waiting-user")
+
   if (details.questions.length > 0 || waitsOnMe) return TaskState.NeedsMe(details)
+
   if (details.running.length > 0 || details.subagents.some((s) => s.kind === "working")) {
     return TaskState.Working(details)
   }
+
   if (details.subagents.length > 0) return TaskState.Watching(details)
+
   return TaskState.Idle(details)
 }
 
@@ -125,6 +131,7 @@ export const taskMachine = Machine.make({
   )
   .on(open, TaskEvent.Observed, ({ state, event }) => {
     const kinds = new Map(state.subagents.map((s) => [s.session, s.kind]))
+
     return settle({
       ...detailsOf(state),
       running: [...without(state.running, (s) => s === event.session), ...(event.running ? [event.session] : [])],
@@ -181,6 +188,7 @@ export const taskMachine = Machine.make({
   )
   .on(open, TaskEvent.Attached, ({ state, event }) => {
     const known = state.attachments.find((a) => a.resource === event.resource)
+
     return settle({
       ...detailsOf(state),
       attachments: [

@@ -13,6 +13,7 @@ const withStore = <A, E>(use: (adapter: typeof PersistenceAdapter.Service, sql: 
   Effect.gen(function* () {
     const sql = yield* SqlClient.SqlClient
     const layer = Persistence.layerSqlite({ Task: Persistence.journaled(taskMachine) }, Effect.succeed(sql))
+
     return yield* Effect.flatMap(PersistenceAdapter, (adapter) => use(adapter, sql)).pipe(Effect.provide(layer))
   }).pipe(Effect.provide(SqliteClient.layer({ filename: ":memory:" })), Effect.runPromise)
 
@@ -25,18 +26,22 @@ test("folding a long journal into a snapshot loses no accepted event", () =>
   withStore((adapter, sql) =>
     Effect.gen(function* () {
       const events = journal(450)
+
       for (const [index, event] of events.entries()) {
         yield* adapter.appendEvents(key, [{ event, version: index + 1, timestamp: index }], index)
       }
+
       const rows = yield* sql<{ count: number }>`SELECT COUNT(*) AS count FROM machine_event`
       expect(rows[0]?.count).toBeLessThan(200)
 
       // A wake reads the snapshot, then replays what the journal holds after it.
       const snapshot = Option.getOrThrow(yield* adapter.loadSnapshot(key))
       const rest = yield* adapter.loadEvents(key, snapshot.version)
+
       const woken = yield* Machine.replay(taskMachine, rest.map((e) => e.event as typeof TaskEvent.Type), {
         from: snapshot.state as TaskState,
       })
+
       const expected = yield* Machine.replay(taskMachine, events)
       expect(woken).toEqual(expected)
       expect(snapshot.version + rest.length).toBe(450)
@@ -49,9 +54,11 @@ test("an append at a stale version is refused after the journal was folded away"
       for (const [index, event] of journal(200).entries()) {
         yield* adapter.appendEvents(key, [{ event, version: index + 1, timestamp: index }], index)
       }
+
       const stale = yield* Effect.flip(
         adapter.appendEvents(key, [{ event: TaskEvent.Renamed({ title: "late" }), version: 200, timestamp: 0 }], 199),
       )
+
       expect(stale._tag).toBe("VersionConflictError")
     }),
   ))

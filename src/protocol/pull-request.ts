@@ -5,6 +5,7 @@ export const PullRequestRef = Schema.Struct({
   repo: Schema.String,
   number: Schema.Int,
 })
+
 export type PullRequestRef = typeof PullRequestRef.Type
 
 export const Check = Schema.Struct({
@@ -13,6 +14,7 @@ export const Check = Schema.Struct({
   /** Whether the base branch requires this check before a merge. */
   required: Schema.Boolean,
 })
+
 export type Check = typeof Check.Type
 
 export const Thread = Schema.Struct({
@@ -23,6 +25,7 @@ export const Thread = Schema.Struct({
   /** Login of who wrote its latest comment. */
   lastAuthor: Schema.String,
 })
+
 export type Thread = typeof Thread.Type
 
 export const Review = Schema.Struct({
@@ -30,6 +33,7 @@ export const Review = Schema.Struct({
   author: Schema.String,
   state: Schema.Literals(["approved", "changes_requested", "commented", "dismissed", "pending"]),
 })
+
 export type Review = typeof Review.Type
 
 /**
@@ -53,6 +57,7 @@ export const PullRequestFacts = Schema.Struct({
   /** Login the gateway's token belongs to, to tell my own activity from other people's. */
   viewer: Schema.String,
 })
+
 export type PullRequestFacts = typeof PullRequestFacts.Type
 
 /** The key a pull request is known by across the hub: `owner/repo#number`, lowercased. */
@@ -63,8 +68,10 @@ export const pullRequestKey = (ref: PullRequestRef) => `${ref.owner}/${ref.repo}
  * needs it merged and does not work on it. `context`: related, and nothing about it should wake anyone.
  */
 export const Relation = Schema.Literals(["owns", "waits_on", "context"])
+
 export type Relation = typeof Relation.Type
 
 /** What a session says about its own work on a pull request. */
 export const WorkStatus = Schema.Literals(["unassigned", "agent-working", "waiting-ci", "waiting-user", "blocked", "ready"])
+
 export type WorkStatus = typeof WorkStatus.Type

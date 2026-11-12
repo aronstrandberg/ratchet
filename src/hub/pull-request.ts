@@ -12,10 +12,12 @@ export const Ci = Schema.TaggedUnion({
   Failing: { failed: Schema.Array(Schema.String) },
   Finished: { failed: Schema.Array(Schema.String) },
 })
+
 export type Ci = typeof Ci.Type
 
 /** A task that follows this pull request, and the session of it that attached. */
 export const Subscriber = Schema.Struct({ task: Schema.String, session: Schema.String, relation: Relation })
+
 export type Subscriber = typeof Subscriber.Type
 
 const subscribers = { subscribers: Schema.Array(Subscriber) }
@@ -40,6 +42,7 @@ export const PullRequestState = State({
   Merged: { ref: PullRequestRef, title: Schema.String, ...subscribers },
   Closed: { ref: PullRequestRef, title: Schema.String, ...subscribers },
 })
+
 export type PullRequestState = typeof PullRequestState.Type
 
 export const PullRequestEvent = Event({
@@ -53,15 +56,19 @@ const ci = (checks: ReadonlyArray<Check>): Ci => {
   const required = checks.filter((check) => check.required)
   const counted = required.length > 0 ? required : checks
   const failed = counted.filter((check) => check.state === "failure").map((check) => check.name)
+
   if (counted.some((check) => check.state === "pending")) {
     return failed.length > 0 ? { _tag: "Failing", failed } : { _tag: "Running" }
   }
+
   return { _tag: "Finished", failed }
 }
 
 const project = (facts: PullRequestFacts, subscribers: ReadonlyArray<Subscriber>) => {
   if (facts.state === "merged") return PullRequestState.Merged({ ref: facts.ref, title: facts.title, subscribers })
+
   if (facts.state === "closed") return PullRequestState.Closed({ ref: facts.ref, title: facts.title, subscribers })
+
   return PullRequestState.Open({
     ref: facts.ref,
     title: facts.title,
@@ -132,6 +139,7 @@ export const Change = Schema.TaggedUnion({
   Merged: {},
   Closed: {},
 })
+
 export type Change = typeof Change.Type
 
 /**
@@ -142,22 +150,28 @@ export type Change = typeof Change.Type
  */
 export const changes = (before: PullRequestState, after: PullRequestState): ReadonlyArray<Change> => {
   if (after._tag === "Merged") return before._tag === "Merged" ? [] : [{ _tag: "Merged" }]
+
   if (after._tag === "Closed") return before._tag === "Closed" ? [] : [{ _tag: "Closed" }]
+
   if (after._tag !== "Open" || before._tag !== "Open") return []
 
   const found: Array<Change> = []
   const sameHead = before.head === after.head
+
   if (!sameHead) found.push({ _tag: "HeadMoved", head: after.head })
 
   const ciBefore = sameHead ? before.ci._tag : "Running"
+
   if (after.ci._tag === "Failing" && ciBefore === "Running") {
     found.push({ _tag: "CiFailing", head: after.head, failed: after.ci.failed })
   }
+
   if (after.ci._tag === "Finished" && ciBefore !== "Finished") {
     found.push({ _tag: "CiFinished", head: after.head, failed: after.ci.failed })
   }
 
   const seenReviews = new Set(before.reviews.map((review) => review.id))
+
   for (const review of after.reviews) {
     if (!seenReviews.has(review.id) && review.state !== "pending" && review.author !== after.viewer) {
       found.push({ _tag: "ReviewSubmitted", author: review.author, state: review.state })
@@ -165,19 +179,25 @@ export const changes = (before: PullRequestState, after: PullRequestState): Read
   }
 
   const threadsBefore = new Map(before.threads.map((thread) => [thread.id, thread]))
+
   for (const thread of after.threads) {
     const known = threadsBefore.get(thread.id)
+
     if (known === undefined && !thread.resolved && thread.author !== after.viewer) {
       found.push({ _tag: "ThreadOpened", thread: thread.id, author: thread.author })
     }
+
     if (known !== undefined && !known.resolved && thread.resolved) {
       found.push({ _tag: "ThreadResolved", thread: thread.id })
     }
   }
 
   if (after.conflicting && !before.conflicting) found.push({ _tag: "Conflicting" })
+
   if (after.queued && !before.queued) found.push({ _tag: "Queued" })
+
   if (!after.queued && before.queued) found.push({ _tag: "Dequeued" })
+
   return found
 }
 

@@ -30,6 +30,7 @@ export class OpenCodeStream extends DurableObject<Env> {
   /** Starts the connection if it is not running, and arms the watchdog. */
   async ensure(): Promise<StreamStatus> {
     await this.ctx.storage.setAlarm(Date.now() + watchdog)
+
     if (this.#loop === undefined) {
       const run = this.#run().pipe(Effect.provide(Telemetry.layer(this.env, "ratchet-gateway")))
       this.#loop = Effect.runPromise(run).finally(() => {
@@ -37,6 +38,7 @@ export class OpenCodeStream extends DurableObject<Env> {
       })
       this.ctx.waitUntil(this.#loop)
     }
+
     return this.#status
   }
 
@@ -53,10 +55,12 @@ export class OpenCodeStream extends DurableObject<Env> {
   #run(): Effect.Effect<void> {
     const config: OpenCode.Config = { url: this.env.OPENCODE_URL, password: this.env.OPENCODE_PASSWORD }
     const hub = this.env.HUB
+
     const send = (facts: ReadonlyArray<SessionFact>): Effect.Effect<ReadonlyArray<Binding>, unknown> =>
       Effect.tryPromise(() => hub.sessionFacts(facts)).pipe(
         Effect.tap(() => this.#update((s) => ({ ...s, facts: s.facts + facts.length }))),
       )
+
     const record = (info: OpenCode.SessionInfo, task: string) =>
       OpenCode.recordTask(config, info, task).pipe(
         Effect.tap((wrote) => (wrote ? this.#update((s) => ({ ...s, recorded: s.recorded + 1 })) : Effect.void)),
@@ -66,23 +70,29 @@ export class OpenCodeStream extends DurableObject<Env> {
       Stream.runForEach((fact) =>
         Effect.gen(function* () {
           const bindings = yield* send([fact])
+
           for (const binding of bindings) {
             yield* record(yield* OpenCode.read(config, binding.session), binding.task)
           }
         }),
       ),
     )
+
     const converge = Effect.gen(function* () {
       const snapshot = yield* OpenCode.snapshot(config)
       const tasks = new Map((yield* send(snapshot.facts)).map((binding) => [binding.session, binding.task]))
       // Least recently updated first: a write moves a session's `updated` time, and this keeps their order.
       const byUpdated = [...snapshot.sessions].sort((a, b) => a.time.updated - b.time.updated)
+
       for (const info of byUpdated) {
         const task = tasks.get(info.id)
+
         if (task !== undefined) yield* record(info, task)
       }
     }).pipe(Effect.withSpan("OpenCodeStream.converge"))
+
     const connected = this.#update((s) => ({ ...s, connected: true, connects: s.connects + 1, lastError: null }))
+
     const once = Effect.gen(function* () {
       yield* connected
       // Listen before the snapshot, so nothing that happens during it is lost.
@@ -90,6 +100,7 @@ export class OpenCodeStream extends DurableObject<Env> {
       yield* converge
       yield* Fiber.join(listening)
     })
+
     return once.pipe(
       Effect.catchCause((cause) => this.#update((s) => ({ ...s, lastError: String(cause).slice(0, 500) }))),
       Effect.ensuring(this.#update((s) => ({ ...s, connected: false }))),

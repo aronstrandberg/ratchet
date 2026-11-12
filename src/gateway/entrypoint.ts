@@ -30,6 +30,7 @@ export class Gateway extends WorkerEntrypoint<Env> {
   async observePullRequest(ref: PullRequestRef): Promise<PollerStatus> {
     const facts = await Effect.runPromise(GitHub.readSettled(this.env.GITHUB_TOKEN, ref))
     await this.env.HUB.pullRequestFacts(facts)
+
     return this.env.GITHUB_POLLER.getByName("default").ensure()
   }
 

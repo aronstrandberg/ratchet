@@ -28,11 +28,13 @@ const observe = (...observations: ReadonlyArray<PullRequestFacts>) =>
     Effect.gen(function* () {
       let state: PullRequestState = PullRequestState.Unseen({ subscribers: [] })
       const all: Array<ReadonlyArray<string>> = []
+
       for (const observation of observations) {
         const next: PullRequestState = yield* Machine.replay(pullRequestMachine, [PullRequestEvent.Observed({ facts: observation })], { from: state })
         all.push(changes(state, next).map((change) => change._tag))
         state = next
       }
+
       return all
     }),
   )
@@ -45,6 +47,7 @@ test("CI on one head reports its first failure and its end, and nothing in betwe
     facts({ checks: [check("a", "failure"), check("b", "failure"), check("c", "success")] }),
     facts({ checks: [check("a", "failure"), check("b", "failure"), check("c", "success")] }),
   )
+
   expect(seen).toEqual([[], ["CiFailing"], [], ["CiFinished"], []])
 })
 
@@ -53,6 +56,7 @@ test("an optional check that fails or stays pending does not hold or fail CI", a
     facts({ checks: [check("required", "pending"), check("optional", "pending", false)] }),
     facts({ checks: [check("required", "success"), check("optional", "failure", false)] }),
   )
+
   expect(seen).toEqual([[], ["CiFinished"]])
 })
 
@@ -62,6 +66,7 @@ test("a push starts CI over, so the new head can report a failure again", async 
     facts({ head: "bbb", checks: [check("a", "pending")] }),
     facts({ head: "bbb", checks: [check("a", "failure")] }),
   )
+
   expect(seen).toEqual([[], ["HeadMoved"], ["CiFinished"]])
 })
 
@@ -79,6 +84,7 @@ test("my own review and thread are not changes, and another person's are", async
       ],
     }),
   )
+
   expect(seen).toEqual([[], ["ReviewSubmitted", "ThreadOpened"]])
 })
 
@@ -91,5 +97,6 @@ test("leaving the merge queue without merging is reported, and merging is report
     facts({ state: "merged" }),
     facts({ state: "merged" }),
   )
+
   expect(seen).toEqual([[], ["Queued"], ["Dequeued"], ["Queued"], ["Merged"], []])
 })

@@ -85,6 +85,7 @@ test("a task that waits on a pull request hears its merge and not its CI or revi
       yield* open("ses_waiter")
       const { task } = yield* PullRequests.register(noIndex, "ses_waiter", ref, "waits_on")
       yield* PullRequests.observe(noIndex, facts({ checks: [check("build", "pending")] }), everyone)
+
       const noisy = yield* PullRequests.observe(
         noIndex,
         facts({
@@ -93,6 +94,7 @@ test("a task that waits on a pull request hears its merge and not its CI or revi
         }),
         everyone,
       )
+
       expect(noisy.changes).toEqual(["CiFinished", "ReviewSubmitted"])
       expect(noisy.queued).toEqual([])
       const merged = yield* PullRequests.observe(noIndex, facts({ state: "merged" }), everyone)
@@ -120,9 +122,11 @@ test("reporting that a pull request waits on me puts its task in front of me", (
       expect((yield* Commands.current("ses_done")).state).toBe("Idle")
       yield* PullRequests.setStatus(noIndex, "ses_done", ref, "waiting-user", "Ready for your review.")
       expect((yield* Commands.current("ses_done")).state).toBe("NeedsMe")
+
       const unknown = yield* Effect.flip(
         PullRequests.setStatus(noIndex, "ses_done", { ...ref, number: 2 }, "ready", "Nothing left."),
       )
+
       expect(unknown._tag).toBe("NotRegistered")
     }),
   ))

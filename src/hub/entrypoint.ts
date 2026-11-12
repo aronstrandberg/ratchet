@@ -16,11 +16,13 @@ export class Hub extends WorkerEntrypoint<Env> {
   async sessionFacts(facts: ReadonlyArray<unknown>): Promise<ReadonlyArray<Binding>> {
     const app = await runtime(this.env)
     const db = this.env.INDEX
+
     return app.runPromise(
       Effect.gen(function* () {
         yield* Index.migrate(db)
         const decoded = yield* decodeFacts(facts)
         const bindings = yield* Effect.forEach(decoded, (fact) => Facts.apply(db, fact))
+
         return bindings.filter((binding) => binding !== null)
       }).pipe(Effect.withSpan("Hub.sessionFacts", { attributes: { "ratchet.facts": facts.length } })),
     )
@@ -36,13 +38,16 @@ export class Hub extends WorkerEntrypoint<Env> {
     const db = this.env.INDEX
     const mayWake = this.#mayWake
     const wake = this.#wake
+
     return app.runPromise(
       Effect.gen(function* () {
         yield* Index.migrate(db)
         const decoded = yield* Schema.decodeUnknownEffect(PullRequestFacts)(facts)
         const observed = yield* PullRequests.observe(db, decoded, mayWake)
         let woke = 0
+
         for (const task of observed.queued) woke += yield* PullRequests.deliver(db, task, wake)
+
         return { changes: observed.changes, woke }
       }).pipe(Effect.withSpan("Hub.pullRequestFacts")),
     )
@@ -53,11 +58,14 @@ export class Hub extends WorkerEntrypoint<Env> {
     const app = await runtime(this.env)
     const db = this.env.INDEX
     const wake = this.#wake
+
     return app.runPromise(
       Effect.gen(function* () {
         yield* Index.migrate(db)
         let woke = 0
+
         for (const task of yield* Index.tasksWithUndelivered(db)) woke += yield* PullRequests.deliver(db, task, wake)
+
         return woke
       }),
     )
@@ -67,19 +75,23 @@ export class Hub extends WorkerEntrypoint<Env> {
   async watchedPullRequests(): Promise<ReadonlyArray<PullRequestRef>> {
     const db = this.env.INDEX
     const rows = await Effect.runPromise(Effect.andThen(Index.migrate(db), Index.pullRequests(db, true)))
+
     return rows.flatMap((row) => {
       const match = /^([^/]+)\/([^#]+)#(\d+)$/.exec(row.key)
+
       return match === null ? [] : [{ owner: match[1]!, repo: match[2]!, number: Number(match[3]) }]
     })
   }
 
   async pullRequests(): Promise<ReadonlyArray<Index.PullRequestRow>> {
     const db = this.env.INDEX
+
     return Effect.runPromise(Effect.andThen(Index.migrate(db), Index.pullRequests(db, false)))
   }
 
   async tree(): Promise<ReadonlyArray<Index.TaskNode>> {
     const db = this.env.INDEX
+
     return Effect.runPromise(Effect.andThen(Index.migrate(db), Index.tree(db)))
   }
 }

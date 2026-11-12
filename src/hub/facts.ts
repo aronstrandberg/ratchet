@@ -31,33 +31,41 @@ export const apply = (db: D1Database, fact: SessionFact) =>
   Effect.gen(function* () {
     const sessions = yield* SessionEntity.client
     const tasks = yield* TaskEntity.client
+
     const send = (task: string, event: typeof TaskEvent.Type) =>
       tasks(task)
         .Send({ event })
         .pipe(Effect.tap((state) => Index.put(db, task, state)))
+
     const taskOf = (session: string) =>
       sessions(session)
         .GetState()
         .pipe(Effect.map((state) => (state._tag === "Bound" ? state.task : null)))
+
     const toTaskOf = (session: string, event: typeof TaskEvent.Type) =>
       Effect.flatMap(taskOf(session), (task) => (task === null ? Effect.void : Effect.asVoid(send(task, event))))
 
     switch (fact._tag) {
       case "Opened": {
         let task = yield* taskOf(fact.session)
+
         if (task === null) {
           task = taskIdOf(fact.session)
           const parent = fact.origin._tag === "Fork" ? yield* taskOf(fact.origin.of) : null
           yield* send(task, TaskEvent.Created({ title: fact.title ?? "Untitled", parent, session: fact.session }))
           yield* sessions(fact.session).Send({ event: SessionEvent.Bound({ task }) })
         }
+
         const binding: Binding = { session: fact.session, task }
         // A snapshot repeats what the task already holds. Send only what differs, so the journal does not grow.
         const state = yield* tasks(task).GetState()
+
         if (state._tag === "Unborn") return binding
+
         if (fact.title !== null && fact.title !== state.title) {
           yield* send(task, TaskEvent.Renamed({ title: fact.title }))
         }
+
         if (differs(state, fact)) {
           yield* send(
             task,
@@ -69,28 +77,37 @@ export const apply = (db: D1Database, fact: SessionFact) =>
             }),
           )
         }
+
         return binding
       }
+
       case "Started":
         yield* toTaskOf(fact.session, TaskEvent.SessionStarted({ session: fact.session }))
+
         return null
       case "Idle":
         yield* toTaskOf(fact.session, TaskEvent.SessionIdle({ session: fact.session }))
+
         return null
       case "Renamed":
         yield* toTaskOf(fact.session, TaskEvent.Renamed({ title: fact.title }))
+
         return null
       case "SubagentStarted":
         yield* toTaskOf(fact.of, TaskEvent.SubagentStarted({ of: fact.of, session: fact.session }))
+
         return null
       case "SubagentStopped":
         yield* toTaskOf(fact.of, TaskEvent.SubagentStopped({ session: fact.session }))
+
         return null
       case "Asked":
         yield* toTaskOf(fact.of, TaskEvent.QuestionAsked({ session: fact.of, question: fact.question }))
+
         return null
       case "Answered":
         yield* toTaskOf(fact.of, TaskEvent.QuestionAnswered({ id: fact.id }))
+
         return null
     }
   })

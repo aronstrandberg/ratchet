@@ -93,14 +93,19 @@ const lower = <A extends string>(value: A) => value.toLowerCase() as Lowercase<A
 
 const check = (context: typeof Context.Type): Check => {
   const required = context.isRequired ?? false
+
   if (context.__typename === "CheckRun") {
     const name = context.name ?? "unnamed check"
+
     if (context.status !== "COMPLETED") return { name, state: "pending", required }
     const passed = ["SUCCESS", "NEUTRAL", "SKIPPED"].includes(context.conclusion ?? "")
+
     return { name, state: passed ? "success" : "failure", required }
   }
+
   const name = context.context ?? "unnamed status"
   const state = context.state === "SUCCESS" ? "success" : context.state === "PENDING" || context.state === "EXPECTED" ? "pending" : "failure"
+
   return { name, state, required }
 }
 
@@ -110,6 +115,7 @@ const reviewStates: ReadonlyArray<Review["state"]> = ["approved", "changes_reque
 export const read = (token: string, ref: PullRequestRef): Effect.Effect<PullRequestFacts, GitHubError> =>
   Effect.gen(function* () {
     const http = yield* HttpClient.HttpClient
+
     const response = yield* HttpClientRequest.post("https://api.github.com/graphql").pipe(
       HttpClientRequest.bearerToken(token),
       HttpClientRequest.setHeader("user-agent", "ratchet"),
@@ -117,12 +123,17 @@ export const read = (token: string, ref: PullRequestRef): Effect.Effect<PullRequ
       http.execute,
       Effect.flatMap(HttpClientResponse.schemaBodyJson(Response)),
     )
+
     const pr = response.data?.repository?.pullRequest
+
     if (pr === null || pr === undefined || response.data === null || response.data === undefined) {
       const message = response.errors?.map((error) => error.message).join("; ") ?? "pull request not found"
+
       return yield* new GitHubError({ operation: "read", message })
     }
+
     const login = (author: typeof Author.Type) => author?.login ?? "ghost"
+
     return {
       ref,
       title: pr.title,
@@ -141,6 +152,7 @@ export const read = (token: string, ref: PullRequestRef): Effect.Effect<PullRequ
       })),
       reviews: pr.reviews.nodes.flatMap((review) => {
         const state = reviewStates.find((known) => known === review.state.toLowerCase())
+
         return state === undefined ? [] : [{ id: review.id, author: login(review.author), state }]
       }),
       viewer: response.data.viewer.login,

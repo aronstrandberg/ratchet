@@ -13,6 +13,7 @@ export const TaskView = Schema.Struct({
   subagents: Schema.Array(Schema.Struct({ session: Schema.String, kind: Schema.Literals(["working", "watching"]) })),
   questions: Schema.Array(Schema.String),
 })
+
 export type TaskView = typeof TaskView.Type
 
 export class NoTask extends Schema.TaggedError<NoTask>()("NoTask", { session: Schema.String }) {}
@@ -36,7 +37,9 @@ const stateOf = (session: string) =>
   Effect.gen(function* () {
     const id = yield* taskOf(session)
     const state = yield* (yield* TaskEntity.client)(id).GetState()
+
     if (state._tag === "Unborn") return yield* new NoTask({ session })
+
     return { id, state }
   })
 
@@ -52,10 +55,12 @@ export const start = (db: D1Database, session: string, title: string, relation: 
   Effect.gen(function* () {
     const tasks = yield* TaskEntity.client
     const sessions = yield* SessionEntity.client
+
     const send = (task: string, event: typeof TaskEvent.Type) =>
       tasks(task)
         .Send({ event })
         .pipe(Effect.tap((state) => Index.put(db, task, state)))
+
     const from = yield* stateOf(session)
     const id = `tsk_${crypto.randomUUID().replaceAll("-", "")}`
     const mine = from.state.subagents.filter((subagent) => subagent.of === session)
@@ -73,14 +78,18 @@ export const start = (db: D1Database, session: string, title: string, relation: 
       }),
     )
     let state = yield* tasks(id).GetState()
+
     for (const subagent of mine) {
       if (subagent.kind === "watching") {
         state = yield* send(id, TaskEvent.SubagentDeclared({ session: subagent.session, kind: "watching" }))
       }
     }
+
     yield* sessions(session).Send({ event: SessionEvent.Bound({ task: id }) })
     yield* send(from.id, TaskEvent.Observed({ session, running: false, subagents: [], questions: [] }))
+
     if (state._tag === "Unborn") return yield* new NoTask({ session })
+
     return { task: view(id, state), left: from.id }
   })
 
@@ -90,6 +99,8 @@ export const declareSubagent = (db: D1Database, session: string, subagent: strin
     const id = yield* taskOf(session)
     const state = yield* (yield* TaskEntity.client)(id).Send({ event: TaskEvent.SubagentDeclared({ session: subagent, kind }) })
     yield* Index.put(db, id, state)
+
     if (state._tag === "Unborn") return yield* new NoTask({ session })
+
     return view(id, state)
   })

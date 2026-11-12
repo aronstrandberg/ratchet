@@ -25,5 +25,6 @@ export interface Env {
 /** Whether Ratchet may put a message into this session. */
 export const mayWake = (env: Pick<Env, "WAKE_SESSIONS">, session: string): boolean => {
   const allowed = (env.WAKE_SESSIONS ?? "").split(",").map((entry) => entry.trim())
+
   return allowed.includes("*") || allowed.includes(session)
 }

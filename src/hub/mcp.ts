@@ -179,6 +179,7 @@ const pullRequestRef = Schema.decodeUnknownSync(PullRequestRef)
 /** The OpenCode session that made the request. OpenCode sends it in the request's metadata, not as an argument. */
 const caller = Effect.flatMap(McpSchema.McpRequestContext, (context) => {
   const session = context.requestMetadata?.["ai.opencode/sessionID"]
+
   return typeof session === "string"
     ? Effect.succeed(session)
     : Effect.fail({ message: "This tool works only from an OpenCode session: the request carries no session ID." })
@@ -200,6 +201,7 @@ const handlers = (env: Env) => {
       try: () => runtime(env).then((app) => app.runPromise(command as Effect.Effect<A, E, never>)),
       catch: failure,
     })
+
   return SessionTools.toLayer(
     SessionTools.of({
       task_current: () => Effect.flatMap(caller, (session) => run(Commands.current(session))),
@@ -208,15 +210,18 @@ const handlers = (env: Env) => {
           const session = yield* caller
           const started = yield* run(Commands.start(env.INDEX, session, title, relation))
           yield* Effect.tryPromise({ try: () => env.GATEWAY.recordTask(session, started.task.id), catch: failure })
+
           return started
         }),
       task_fork: ({ title, prompt }) =>
         Effect.gen(function* () {
           const session = yield* caller
+
           const fork = yield* Effect.tryPromise({
             try: () => env.GATEWAY.forkSession(session, title, prompt),
             catch: failure,
           })
+
           return { session: fork }
         }),
       subagent_declare: ({ session: subagent, kind }) =>
@@ -228,6 +233,7 @@ const handlers = (env: Env) => {
           const registered = yield* run(PullRequests.register(env.INDEX, session, ref, relation ?? "owns"))
           // The first read gives the task something to show, and starts the poller.
           yield* Effect.tryPromise({ try: () => env.GATEWAY.observePullRequest(ref), catch: failure })
+
           return { ...registered, wakes: relation !== "context" && mayWake(env, session) }
         }),
       pr_set_status: ({ owner, repo, number, state, note }) =>
@@ -258,5 +264,6 @@ let web: ((request: Request) => Promise<Response>) | undefined
 /** Serves the hub's MCP endpoint, the tools sessions call. */
 export const handle = (env: Env, request: Request): Promise<Response> => {
   web ??= HttpRouter.toWebHandler(layer(env)).handler
+
   return web(request)
 }

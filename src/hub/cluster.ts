@@ -49,12 +49,16 @@ const build = async (env: Env): Promise<Runtime> => {
     await runtime.dispose()
     throw error
   })
+
   // A stalled build can finish after its replacement: keep the first one.
   if (application === undefined) {
     application = runtime
+
     return runtime
   }
+
   await runtime.dispose()
+
   return application
 }
 
@@ -63,5 +67,6 @@ const initialize = CloudflareDurableObjects.setInitializer((env: Env) => build(e
 /** The cluster runtime of this isolate, built on first use by a Worker event or a Durable Object. */
 export const runtime = async (env: Env): Promise<Runtime> => {
   await initialize(env)
+
   return build(env)
 }

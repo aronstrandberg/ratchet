@@ -7,14 +7,19 @@ export {
   ClusterSingleton,
   ClusterWorkflow,
 } from "@effect/platform-cloudflare/CloudflareDurableObjects"
+
 export { Gateway } from "./gateway/entrypoint.ts"
+
 export { GitHubPoller } from "./gateway/github-poller.ts"
+
 export { OpenCodeStream } from "./gateway/opencode-stream.ts"
+
 export { Hub } from "./hub/entrypoint.ts"
 
 export default {
   async fetch(request: Request, env: Env): Promise<Response> {
     const { pathname } = new URL(request.url)
+
     switch (pathname) {
       case "/tree":
         return Response.json(await env.HUB.tree())
