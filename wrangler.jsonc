@@ -24,5 +24,6 @@
     { "binding": "HUB", "service": "ratchet", "entrypoint": "Hub" },
     { "binding": "GATEWAY", "service": "ratchet", "entrypoint": "Gateway" }
   ],
+  "vars": { "OTLP_URL": "http://127.0.0.1:14318" },
   "d1_databases": [{ "binding": "INDEX", "database_name": "ratchet-index", "database_id": "ratchet-index" }]
 }

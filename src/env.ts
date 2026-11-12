@@ -13,4 +13,6 @@ export interface Env {
   readonly INDEX: D1Database
   readonly OPENCODE_URL: string
   readonly OPENCODE_PASSWORD: string
+  /** Base URL of the OTLP/HTTP collector. Empty or absent turns tracing off. */
+  readonly OTLP_URL?: string
 }

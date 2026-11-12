@@ -2,6 +2,7 @@ import { CloudflareCluster, CloudflareDurableObjects } from "@effect/platform-cl
 import { Layer, ManagedRuntime } from "effect"
 import { EntityMachine } from "effect-machine/cluster"
 import type { Env } from "../env.ts"
+import * as Telemetry from "../telemetry.ts"
 import * as Persistence from "./persistence.ts"
 import { SessionEntity, sessionMachine } from "./session.ts"
 import { TaskEntity, taskMachine } from "./task.ts"
@@ -14,11 +15,12 @@ const layer = (env: Env) =>
     EntityMachine.layer(SessionEntity, sessionMachine, journal),
   ).pipe(
     Layer.provide(
-      Persistence.layerSqlite({
-        Task: { state: taskMachine.stateSchema, event: taskMachine.eventSchema },
-        Session: { state: sessionMachine.stateSchema, event: sessionMachine.eventSchema },
-      }),
+      Persistence.layerSqlite(
+        { Task: Persistence.journaled(taskMachine), Session: Persistence.journaled(sessionMachine) },
+        CloudflareCluster.DurableObjectSqlClient.orDie,
+      ),
     ),
+    Layer.provideMerge(Telemetry.layer(env, "ratchet-hub")),
     Layer.provideMerge(
       CloudflareCluster.layer({
         entities: [TaskEntity, SessionEntity],
