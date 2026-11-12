@@ -1,7 +1,7 @@
 import { Effect, Layer, Schema } from "effect"
 import { McpProtocol, McpSchema, McpServer, Tool, Toolkit } from "effect/ai"
 import { HttpRouter } from "effect/http"
-import type { Env } from "../env.ts"
+import { type Env, mayWake } from "../env.ts"
 import { runtime } from "./cluster.ts"
 import { PullRequestRef, Relation, WorkStatus } from "../protocol/pull-request.ts"
 import * as Commands from "./commands.ts"
@@ -18,10 +18,12 @@ const instructions = `Ratchet tracks this session's work as tasks. A session wor
   task, call subagent_declare with kind "watching". Otherwise the task shows as being worked on for as long as the
   subagent runs.
 - When you create a pull request, take one over at the user's request, or wait on one (such as another person's
-  base pull request that must merge first), call pr_register. Ratchet then follows it on GitHub and sends this
-  session a message when something happens that needs action: CI fails or ends, someone reviews it or opens a
-  thread, it conflicts, leaves the merge queue, merges or closes. So do not poll or sleep to watch CI or reviews
-  on a registered pull request: end your turn. Do not register pull requests you only read or discuss.
+  base pull request that must merge first), call pr_register. Do not register pull requests you only read or
+  discuss. Ratchet follows a registered pull request on GitHub. When pr_register answers "wakes": true, Ratchet
+  sends this session a message when something happens that needs action: CI fails or ends, someone reviews it or
+  opens a thread, it conflicts, leaves the merge queue, merges or closes. Then do not poll or sleep to watch CI
+  or reviews on it: end your turn. When it answers "wakes": false, nothing will wake this session, so watch the
+  pull request the way you otherwise would.
 - Call pr_set_status whenever the state of your work on a registered pull request changes, and before you end
   your turn: agent-working, waiting-ci, waiting-user (you need the user's answer, review or merge), blocked, or
   ready (nothing is left but merging). The note says in one sentence what you are doing, what blocks it, or what
@@ -92,7 +94,7 @@ const Registered = Schema.Struct({ task: Schema.String, pullRequest: Schema.Stri
 
 const PrRegister = Tool.make("pr_register", {
   description:
-    "Attach a pull request to this session's current task, so Ratchet follows it on GitHub and wakes this session when it needs action. Calling it again keeps the reported work status. It does not change GitHub.",
+    "Attach a pull request to this session's current task, so Ratchet follows it on GitHub. The answer's wakes field says whether Ratchet will message this session when the pull request needs action. Calling it again keeps the reported work status. It does not change GitHub.",
   parameters: Schema.Struct({
     ...reference,
     relation: Schema.optional(Relation).annotate({
@@ -100,7 +102,7 @@ const PrRegister = Tool.make("pr_register", {
         "owns (the default): this session drives the pull request to mergeable. waits_on: this task needs it merged and does not work on it; only its merge or close wakes the session. context: related, and nothing about it wakes anyone.",
     }),
   }),
-  success: Registered,
+  success: Schema.Struct({ ...Registered.fields, wakes: Schema.Boolean }),
   failure: Failure,
   failureMode: "return",
   dependencies: [McpSchema.McpRequestContext],
@@ -226,7 +228,7 @@ const handlers = (env: Env) => {
           const registered = yield* run(PullRequests.register(env.INDEX, session, ref, relation ?? "owns"))
           // The first read gives the task something to show, and starts the poller.
           yield* Effect.tryPromise({ try: () => env.GATEWAY.observePullRequest(ref), catch: failure })
-          return registered
+          return { ...registered, wakes: relation !== "context" && mayWake(env, session) }
         }),
       pr_set_status: ({ owner, repo, number, state, note }) =>
         Effect.flatMap(caller, (session) =>

@@ -1,6 +1,6 @@
 import { WorkerEntrypoint } from "cloudflare:workers"
 import { Effect, Schema } from "effect"
-import type { Env } from "../env.ts"
+import { type Env, mayWake } from "../env.ts"
 import { PullRequestFacts, type PullRequestRef } from "../protocol/pull-request.ts"
 import { type Binding, SessionFact } from "../protocol/session.ts"
 import { runtime } from "./cluster.ts"
@@ -26,10 +26,7 @@ export class Hub extends WorkerEntrypoint<Env> {
     )
   }
 
-  #mayWake = (session: string): boolean => {
-    const allowed = (this.env.WAKE_SESSIONS ?? "").split(",").map((entry) => entry.trim())
-    return allowed.includes("*") || allowed.includes(session)
-  }
+  #mayWake = (session: string): boolean => mayWake(this.env, session)
 
   #wake = (session: string, text: string) => Effect.tryPromise(() => this.env.GATEWAY.wake(session, text))
 
