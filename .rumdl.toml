@@ -1,6 +1,6 @@
 [global]
 line-length = 80
-exclude = ["tools/oxlint/anti-slop/**"]
+exclude = ["tools/oxlint/anti-slop/**", ".agents/**"]
 # Keep the exclusion when a hook passes file names.
 force-exclude = true
 

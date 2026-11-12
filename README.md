@@ -14,18 +14,27 @@ connection to the outside.
 
 Needs `celld` (v0.6.3) and `bun` on `PATH`, and a running OpenCode service.
 
+The service runs from its own checkout, `~/.local/share/ratchet/live`, so an
+edit in a working checkout never reaches the sessions that call it. A systemd
+user unit runs `celld dev` there on `http://127.0.0.1:9876`. The unit is in
+`nix/ratchet.nix` of my dotfiles.
+
 ```sh
-bun install
-scripts/dev-vars.sh   # writes .dev.vars with the OpenCode URL and password
-bun run dev           # celld dev on http://127.0.0.1:9876
+scripts/deploy.sh   # move the service to origin/main, after the checks pass here
 ```
+
+The first run creates the checkout. `scripts/dev-vars.sh` writes its
+`.dev.vars`: the OpenCode URL and password, and the lines of
+`~/.config/ratchet/secrets.env` and `settings.env`.
 
 | Route | Does |
 | --- | --- |
 | `GET /gateway/opencode` | Starts the OpenCode connection if it is not running, and reports it |
 | `GET /tree` | Returns the task forest |
+| `GET /prs` | Returns the pull requests tasks follow |
+| `POST /mcp` | The tools sessions call |
 
-State lives in `.celld/dev`. `celld dev . --clean` starts from nothing.
+State lives in `.celld/dev` of the service's checkout.
 
 ## Checks
 
