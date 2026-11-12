@@ -1,0 +1,20 @@
+{
+  "name": "ratchet",
+  "main": "src/index.ts",
+  "compatibility_date": "2026-08-30",
+  "compatibility_flags": ["nodejs_compat"],
+  "durable_objects": {
+    "bindings": [
+      { "name": "CLUSTER_ENTITY", "class_name": "ClusterEntity" },
+      { "name": "CLUSTER_WORKFLOW", "class_name": "ClusterWorkflow" },
+      { "name": "CLUSTER_QUEUE", "class_name": "ClusterDurableQueue" },
+      { "name": "CLUSTER_SINGLETON", "class_name": "ClusterSingleton" }
+    ]
+  },
+  "migrations": [
+    {
+      "tag": "v1",
+      "new_sqlite_classes": ["ClusterEntity", "ClusterWorkflow", "ClusterDurableQueue", "ClusterSingleton"]
+    }
+  ]
+}
