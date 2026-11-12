@@ -1,4 +1,5 @@
 import type { Env } from "./env.ts"
+import * as Mcp from "./hub/mcp.ts"
 
 export {
   ClusterDurableQueue,
@@ -16,6 +17,8 @@ export default {
     switch (pathname) {
       case "/tree":
         return Response.json(await env.HUB.tree())
+      case "/mcp":
+        return Mcp.handle(env, request)
       case "/gateway/opencode":
         return Response.json(await env.GATEWAY.watchOpenCode())
       default:

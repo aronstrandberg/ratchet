@@ -287,3 +287,24 @@ export const recordTask = (config: Config, info: SessionInfo, task: string): Eff
 /** Reads one session. */
 export const read = (config: Config, id: string): Effect.Effect<SessionInfo, unknown> =>
   session(config, id).pipe(Effect.provide(FetchHttpClient.layer))
+
+/**
+ * Forks a session into a new one that holds the same history, names it, and gives it its first prompt.
+ *
+ * The fork starts in the directory of the session it came from.
+ */
+export const fork = (config: Config, id: string, title: string, prompt: string): Effect.Effect<string, unknown> =>
+  Effect.gen(function* () {
+    const http = yield* client(config)
+    const post = (path: string, body: unknown) =>
+      HttpClientRequest.post(path).pipe(HttpClientRequest.bodyJsonUnsafe(body), http.execute)
+    const forked = yield* post(`/api/session/${id}/fork`, {}).pipe(
+      Effect.flatMap(HttpClientResponse.schemaBodyJson(Schema.Struct({ data: SessionInfo }))),
+    )
+    yield* HttpClientRequest.patch(`/api/session/${forked.data.id}`).pipe(
+      HttpClientRequest.bodyJsonUnsafe({ title }),
+      http.execute,
+    )
+    yield* post(`/api/session/${forked.data.id}/prompt`, { text: prompt })
+    return forked.data.id
+  }).pipe(Effect.provide(FetchHttpClient.layer), Effect.withSpan("OpenCode.fork"))
