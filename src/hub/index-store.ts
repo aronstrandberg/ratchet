@@ -17,9 +17,9 @@ const TaskDetail = Schema.Struct({
   // Rows of tasks that never followed a resource lack the next two keys.
   attachments: Schema.Array(
     Schema.Struct({ resource: Schema.String, relation: Schema.String, status: Schema.String, note: Schema.String }),
-  ).pipe(Schema.optional, Schema.withDecodingDefault(Effect.succeed([]))),
+  ).pipe(Schema.withDecodingDefaultKey(Effect.succeed([]))),
   /** Wake-ups that have not reached a session yet. */
-  undelivered: Schema.Number.pipe(Schema.optional, Schema.withDecodingDefault(Effect.succeed(0))),
+  undelivered: Schema.Number.pipe(Schema.withDecodingDefaultKey(Effect.succeed(0))),
 })
 
 const TaskDetailJson = Schema.fromJsonString(TaskDetail)

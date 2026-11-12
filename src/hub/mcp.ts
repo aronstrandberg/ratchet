@@ -127,7 +127,7 @@ const PrSetStatus = Tool.make("pr_set_status", {
 
 const PrList = Tool.make("pr_list", {
   description:
-    "List the pull requests this session's current task follows: the relation, the last reported work status, and what GitHub last said (CI, review decision, conflict, merge queue, open threads).",
+    "List the pull requests the tasks of this session follow, on its current task and on tasks it worked on before: the task, the relation, the last reported work status, and what GitHub last said (CI, review decision, conflict, merge queue, open threads).",
   parameters: Tool.EmptyParams,
   success: PullRequests.Following,
   failure: Failure,
@@ -174,7 +174,7 @@ const failure = (cause: unknown) => ({
     cause instanceof Commands.NoTask
       ? `Ratchet has no task for session ${cause.session} yet. It learns about a session within seconds of its first message.`
       : cause instanceof PullRequests.NotRegistered
-        ? `${cause.pullRequest} is not registered on this session's task. Call pr_register first.`
+        ? `${cause.pullRequest} is not registered on a task of this session. Call pr_register first.`
         : String(cause),
 })
 

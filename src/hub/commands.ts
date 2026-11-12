@@ -1,5 +1,5 @@
 import { Effect, Schema } from "effect"
-import { SessionEntity, SessionEvent, boundTask } from "./session.ts"
+import { SessionEntity, SessionEvent, boundTask, tasksOf as tasksOfState } from "./session.ts"
 import * as Index from "./index-store.ts"
 import { type LiveTask, TaskEntity, TaskEvent, isUnborn } from "./task.ts"
 
@@ -35,6 +35,16 @@ export const taskOf = (session: string) =>
       const task = boundTask(state)
 
       return task === null ? Effect.fail(new NoTask({ session })) : Effect.succeed(task)
+    }),
+  )
+
+/** Every task a session has worked on, the current one first. It fails for a session the hub has not bound. */
+export const tasksOf = (session: string) =>
+  Effect.flatMap(SessionEntity.client, (sessions) => sessions(session).GetState()).pipe(
+    Effect.flatMap((state) => {
+      const tasks = tasksOfState(state)
+
+      return tasks.length === 0 ? Effect.fail(new NoTask({ session })) : Effect.succeed(tasks)
     }),
   )
 

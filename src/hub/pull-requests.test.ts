@@ -128,3 +128,39 @@ test("reporting that a pull request waits on me puts its task in front of me", (
       expect(unknown._tag).toBe("NotRegistered")
     }),
   ))
+
+test("a session that started another task still reports on the pull request of its earlier task", () =>
+  run(
+    Effect.gen(function* () {
+      yield* open("ses_mover")
+      const first = yield* PullRequests.register(noIndex, "ses_mover", ref, "owns")
+      const started = yield* Commands.start(noIndex, "ses_mover", "Something else", "sibling")
+      expect(started.task.id).not.toBe(first.task)
+
+      const reported = yield* PullRequests.setStatus(noIndex, "ses_mover", ref, "waiting-ci", "Checks run.")
+      expect(reported.task).toBe(first.task)
+      // Registering again does not attach it to the new task as well.
+      expect((yield* PullRequests.register(noIndex, "ses_mover", ref, "owns")).task).toBe(first.task)
+
+      const following = yield* PullRequests.list("ses_mover")
+      expect(following.task).toBe(started.task.id)
+      expect(following.pullRequests.map(({ task, status }) => ({ task, status }))).toEqual([
+        { task: first.task, status: "waiting-ci" },
+      ])
+    }),
+  ))
+
+test("a wake-up for an earlier task says the session now works on another one", () =>
+  run(
+    Effect.gen(function* () {
+      yield* open("ses_later")
+      const { task } = yield* PullRequests.register(noIndex, "ses_later", ref, "owns")
+      yield* PullRequests.observe(noIndex, facts(), everyone)
+      yield* Commands.start(noIndex, "ses_later", "Something else", "child")
+      yield* PullRequests.observe(noIndex, facts({ state: "merged" }), everyone)
+
+      const sent: Array<string> = []
+      yield* PullRequests.deliver(noIndex, task, (_session, text) => Effect.sync(() => void sent.push(text)))
+      expect(sent[0]).toContain('It belongs to "ses_later", a task you worked on before the one you work on now.')
+    }),
+  ))
