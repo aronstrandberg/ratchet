@@ -1,30 +1,26 @@
-import { Effect } from "effect"
-import {
-  type PullRequestFacts,
-  type PullRequestRef,
-  type Relation,
-  type WorkStatus,
-  pullRequestKey,
-} from "../protocol/pull-request.ts"
-import { Schema } from "effect"
-import { NoTask } from "./commands.ts"
+import { Effect, Result, Schema } from "effect"
+import { type PullRequestFacts, type PullRequestRef, Relation, WorkStatus, pullRequestKey } from "../protocol/pull-request.ts"
+import { taskOf } from "./commands.ts"
 import * as Index from "./index-store.ts"
-import { type Change, PullRequestEntity, PullRequestEvent, changes, describe, wakes } from "./pull-request.ts"
-import { SessionEntity } from "./session.ts"
-import { TaskEntity, TaskEvent } from "./task.ts"
+import {
+  type Change,
+  PullRequestEntity,
+  PullRequestEvent,
+  PullRequestState,
+  changes,
+  describe,
+  failedChecks,
+  wakes,
+} from "./pull-request.ts"
+import { TaskEntity, TaskEvent, isUnborn } from "./task.ts"
 
-const taskOf = (session: string) =>
-  Effect.flatMap(SessionEntity.client, (sessions) => sessions(session).GetState()).pipe(
-    Effect.flatMap((state) => (state._tag === "Bound" ? Effect.succeed(state.task) : Effect.fail(new NoTask({ session })))),
-  )
-
-const sendTask = (db: D1Database, task: string, event: typeof TaskEvent.Type) =>
+const sendTask = (db: Index.Database, task: string, event: typeof TaskEvent.Type) =>
   Effect.flatMap(TaskEntity.client, (tasks) => tasks(task).Send({ event })).pipe(
     Effect.tap((state) => Index.put(db, task, state)),
   )
 
 /** Attaches a pull request to the session's current task, so the task hears what happens to it. */
-export const register = (db: D1Database, session: string, ref: PullRequestRef, relation: Relation) =>
+export const register = (db: Index.Database, session: string, ref: PullRequestRef, relation: Relation) =>
   Effect.gen(function* () {
     const task = yield* taskOf(session)
     const key = pullRequestKey(ref)
@@ -45,11 +41,11 @@ export class NotRegistered extends Schema.TaggedError<NotRegistered>()("NotRegis
 
 const attachmentsOf = (task: string) =>
   Effect.flatMap(TaskEntity.client, (tasks) => tasks(task).GetState()).pipe(
-    Effect.map((state) => (state._tag === "Unborn" ? [] : state.attachments)),
+    Effect.map((state) => (isUnborn(state) ? [] : state.attachments)),
   )
 
 /** Records what the session says about its work on a pull request its task follows. */
-export const setStatus = (db: D1Database, session: string, ref: PullRequestRef, status: WorkStatus, note: string) =>
+export const setStatus = (db: Index.Database, session: string, ref: PullRequestRef, status: WorkStatus, note: string) =>
   Effect.gen(function* () {
     const task = yield* taskOf(session)
     const key = pullRequestKey(ref)
@@ -64,7 +60,7 @@ export const setStatus = (db: D1Database, session: string, ref: PullRequestRef, 
   })
 
 /** Stops the session's current task following a pull request. */
-export const unregister = (db: D1Database, session: string, ref: PullRequestRef) =>
+export const unregister = (db: Index.Database, session: string, ref: PullRequestRef) =>
   Effect.gen(function* () {
     const task = yield* taskOf(session)
     const key = pullRequestKey(ref)
@@ -75,32 +71,60 @@ export const unregister = (db: D1Database, session: string, ref: PullRequestRef)
     return { task, pullRequest: key }
   })
 
+/** What GitHub last said about a pull request. Only an open one has more than its state. */
+const GitHubView = Schema.Struct({
+  state: Schema.Literals(["unseen", "open", "merged", "closed"]),
+  ci: Schema.optional(Schema.Literals(["Running", "Failing", "Finished"])),
+  failed: Schema.optional(Schema.Array(Schema.String)),
+  reviewDecision: Schema.optional(Schema.NullOr(Schema.String)),
+  conflicting: Schema.optional(Schema.Boolean),
+  queued: Schema.optional(Schema.Boolean),
+  openThreads: Schema.optional(Schema.Int),
+})
+
+type GitHubView = typeof GitHubView.Type
+
+const Followed = Schema.Struct({
+  pullRequest: Schema.String,
+  relation: Relation,
+  status: WorkStatus,
+  note: Schema.String,
+  github: GitHubView,
+})
+
+/** The pull requests a task follows. */
+export const Following = Schema.Struct({ task: Schema.String, pullRequests: Schema.Array(Followed) })
+
+const githubView = (state: PullRequestState): GitHubView =>
+  PullRequestState.$match<GitHubView>(state, {
+    Unseen: () => ({ state: "unseen" }),
+    Merged: () => ({ state: "merged" }),
+    Closed: () => ({ state: "closed" }),
+    Open: (open) => ({
+      state: "open",
+      ci: open.ci._tag,
+      failed: failedChecks(open.ci),
+      reviewDecision: open.reviewDecision,
+      conflicting: open.conflicting,
+      queued: open.queued,
+      openThreads: open.threads.filter((thread) => !thread.resolved).length,
+    }),
+  })
+
 /** The pull requests the session's current task follows, with what GitHub last said about each. */
 export const list = (session: string) =>
   Effect.gen(function* () {
     const task = yield* taskOf(session)
     const pullRequests = yield* PullRequestEntity.client
-    const rows = []
+    const rows: Array<typeof Followed.Type> = []
 
     for (const attachment of yield* attachmentsOf(task)) {
-      const state = yield* pullRequests(attachment.resource).GetState()
       rows.push({
         pullRequest: attachment.resource,
         relation: attachment.relation,
         status: attachment.status,
         note: attachment.note,
-        github:
-          state._tag === "Open"
-            ? {
-                state: "open" as const,
-                ci: state.ci._tag,
-                failed: state.ci._tag === "Running" ? [] : state.ci.failed,
-                reviewDecision: state.reviewDecision,
-                conflicting: state.conflicting,
-                queued: state.queued,
-                openThreads: state.threads.filter((thread) => !thread.resolved).length,
-              }
-            : { state: state._tag === "Unseen" ? ("unseen" as const) : state._tag === "Merged" ? ("merged" as const) : ("closed" as const) },
+        github: githubView(yield* pullRequests(attachment.resource).GetState()),
       })
     }
 
@@ -123,7 +147,7 @@ const wakeId = (key: string, facts: PullRequestFacts, relevant: ReadonlyArray<Ch
  *
  * `mayWake` says which sessions may be woken. It returns the tasks that now hold undelivered wake-ups.
  */
-export const observe = (db: D1Database, facts: PullRequestFacts, mayWake: (session: string) => boolean) =>
+export const observe = (db: Index.Database, facts: PullRequestFacts, mayWake: (session: string) => boolean) =>
   Effect.gen(function* () {
     const key = pullRequestKey(facts.ref)
     const pullRequest = (yield* PullRequestEntity.client)(key)
@@ -157,17 +181,17 @@ export const observe = (db: D1Database, facts: PullRequestFacts, mayWake: (sessi
  *
  * A wake-up that fails stays queued for the next call.
  */
-export const deliver = <E>(db: D1Database, task: string, wake: (session: string, text: string) => Effect.Effect<void, E>) =>
+export const deliver = <E>(db: Index.Database, task: string, wake: (session: string, text: string) => Effect.Effect<void, E>) =>
   Effect.gen(function* () {
     const state = yield* (yield* TaskEntity.client)(task).GetState()
 
-    if (state._tag === "Unborn") return 0
+    if (isUnborn(state)) return 0
     let delivered = 0
 
     for (const queued of state.outbox) {
       const sent = yield* Effect.result(wake(queued.session, queued.text))
 
-      if (sent._tag === "Failure") continue
+      if (Result.isFailure(sent)) continue
       yield* sendTask(db, task, TaskEvent.WakeDelivered({ id: queued.id }))
       delivered++
     }

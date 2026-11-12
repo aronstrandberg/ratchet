@@ -1,10 +1,11 @@
-import { Effect, Layer, Schema } from "effect"
+import { Effect, Layer, Option, Schema } from "effect"
 import { McpProtocol, McpSchema, McpServer, Tool, Toolkit } from "effect/ai"
 import { HttpRouter } from "effect/http"
 import { type Env, mayWake } from "../env.ts"
-import { runtime } from "./cluster.ts"
-import { PullRequestRef, Relation, WorkStatus } from "../protocol/pull-request.ts"
+import { type Services, runtime } from "./cluster.ts"
+import { PullRequestRef, Relation } from "../protocol/pull-request.ts"
 import * as Commands from "./commands.ts"
+import * as Index from "./index-store.ts"
 import * as PullRequests from "./pull-requests.ts"
 
 const instructions = `Ratchet tracks this session's work as tasks. A session works on one task at a time.
@@ -128,26 +129,7 @@ const PrList = Tool.make("pr_list", {
   description:
     "List the pull requests this session's current task follows: the relation, the last reported work status, and what GitHub last said (CI, review decision, conflict, merge queue, open threads).",
   parameters: Tool.EmptyParams,
-  success: Schema.Struct({
-    task: Schema.String,
-    pullRequests: Schema.Array(
-      Schema.Struct({
-        pullRequest: Schema.String,
-        relation: Relation,
-        status: WorkStatus,
-        note: Schema.String,
-        github: Schema.Struct({
-          state: Schema.Literals(["unseen", "open", "merged", "closed"]),
-          ci: Schema.optional(Schema.Literals(["Running", "Failing", "Finished"])),
-          failed: Schema.optional(Schema.Array(Schema.String)),
-          reviewDecision: Schema.optional(Schema.NullOr(Schema.String)),
-          conflicting: Schema.optional(Schema.Boolean),
-          queued: Schema.optional(Schema.Boolean),
-          openThreads: Schema.optional(Schema.Int),
-        }),
-      }),
-    ),
-  }),
+  success: PullRequests.Following,
   failure: Failure,
   failureMode: "return",
   dependencies: [McpSchema.McpRequestContext],
@@ -176,14 +158,16 @@ const SessionTools = Toolkit.make(
 
 const pullRequestRef = Schema.decodeUnknownSync(PullRequestRef)
 
-/** The OpenCode session that made the request. OpenCode sends it in the request's metadata, not as an argument. */
-const caller = Effect.flatMap(McpSchema.McpRequestContext, (context) => {
-  const session = context.requestMetadata?.["ai.opencode/sessionID"]
+const CallerMetadata = Schema.Struct({ "ai.opencode/sessionID": Schema.String })
 
-  return typeof session === "string"
-    ? Effect.succeed(session)
-    : Effect.fail({ message: "This tool works only from an OpenCode session: the request carries no session ID." })
-})
+/** The OpenCode session that made the request. OpenCode sends it in the request's metadata, not as an argument. */
+const caller = Effect.flatMap(McpSchema.McpRequestContext, (context) =>
+  Option.match(Schema.decodeUnknownOption(CallerMetadata)(context.requestMetadata), {
+    onNone: () =>
+      Effect.fail({ message: "This tool works only from an OpenCode session: the request carries no session ID." }),
+    onSome: (metadata) => Effect.succeed(metadata["ai.opencode/sessionID"]),
+  }),
+)
 
 const failure = (cause: unknown) => ({
   message:
@@ -195,10 +179,12 @@ const failure = (cause: unknown) => ({
 })
 
 const handlers = (env: Env) => {
+  const db = Index.d1(env.INDEX)
+
   /** Runs a hub command on the cluster runtime of this isolate. */
-  const run = <A, E>(command: Effect.Effect<A, E, any>) =>
+  const run = <A, E>(command: Effect.Effect<A, E, Services>) =>
     Effect.tryPromise({
-      try: () => runtime(env).then((app) => app.runPromise(command as Effect.Effect<A, E, never>)),
+      try: () => runtime(env).then((app) => app.runPromise(command)),
       catch: failure,
     })
 
@@ -208,7 +194,7 @@ const handlers = (env: Env) => {
       task_start: ({ title, relation }) =>
         Effect.gen(function* () {
           const session = yield* caller
-          const started = yield* run(Commands.start(env.INDEX, session, title, relation))
+          const started = yield* run(Commands.start(db, session, title, relation))
           yield* Effect.tryPromise({ try: () => env.GATEWAY.recordTask(session, started.task.id), catch: failure })
 
           return started
@@ -225,12 +211,12 @@ const handlers = (env: Env) => {
           return { session: fork }
         }),
       subagent_declare: ({ session: subagent, kind }) =>
-        Effect.flatMap(caller, (session) => run(Commands.declareSubagent(env.INDEX, session, subagent, kind))),
+        Effect.flatMap(caller, (session) => run(Commands.declareSubagent(db, session, subagent, kind))),
       pr_register: ({ owner, repo, number, relation }) =>
         Effect.gen(function* () {
           const session = yield* caller
           const ref = pullRequestRef({ owner, repo, number })
-          const registered = yield* run(PullRequests.register(env.INDEX, session, ref, relation ?? "owns"))
+          const registered = yield* run(PullRequests.register(db, session, ref, relation ?? "owns"))
           // The first read gives the task something to show, and starts the poller.
           yield* Effect.tryPromise({ try: () => env.GATEWAY.observePullRequest(ref), catch: failure })
 
@@ -238,12 +224,12 @@ const handlers = (env: Env) => {
         }),
       pr_set_status: ({ owner, repo, number, state, note }) =>
         Effect.flatMap(caller, (session) =>
-          run(PullRequests.setStatus(env.INDEX, session, pullRequestRef({ owner, repo, number }), state, note)),
+          run(PullRequests.setStatus(db, session, pullRequestRef({ owner, repo, number }), state, note)),
         ),
       pr_list: () => Effect.flatMap(caller, (session) => run(PullRequests.list(session))),
       pr_unregister: ({ owner, repo, number }) =>
         Effect.flatMap(caller, (session) =>
-          run(PullRequests.unregister(env.INDEX, session, pullRequestRef({ owner, repo, number }))),
+          run(PullRequests.unregister(db, session, pullRequestRef({ owner, repo, number }))),
         ),
     }),
   )

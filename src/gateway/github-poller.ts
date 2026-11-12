@@ -1,5 +1,5 @@
 import { DurableObject } from "cloudflare:workers"
-import { Effect } from "effect"
+import { Effect, Result } from "effect"
 import type { Env } from "../env.ts"
 import * as Telemetry from "../telemetry.ts"
 import * as GitHub from "./github.ts"
@@ -47,7 +47,7 @@ export class GitHubPoller extends DurableObject<Env> {
 
     const result = await Effect.runPromise(Effect.result(poll))
     this.#status =
-      result._tag === "Success"
+      Result.isSuccess(result)
         ? { polls: this.#status.polls + 1, watched: result.success, lastError: null }
         : { ...this.#status, polls: this.#status.polls + 1, lastError: String(result.failure).slice(0, 500) }
   }

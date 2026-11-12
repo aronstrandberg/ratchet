@@ -9,23 +9,106 @@ import {
 } from "effect-machine/cluster"
 import type { SqlClient } from "effect/sql"
 
-/** What the store needs from a machine: how to encode its state and events, and how to fold events into state. */
+/**
+ * One machine's snapshots and journal in SQLite, encoded with the machine's own schemas.
+ *
+ * `entity` names the cell: its entity type and ID. Every method fails when a stored or given value does not
+ * match the machine's schemas.
+ */
 export interface Journaled {
-  readonly state: Schema.Codec<any, any>
-  readonly event: Schema.Codec<any, any>
-  readonly initial: unknown
-  readonly replay: (events: ReadonlyArray<unknown>, from: unknown) => Effect.Effect<unknown>
+  readonly readSnapshot: (sql: SqlClient.SqlClient, entity: string) => Effect.Effect<Option.Option<Snapshot<unknown>>, unknown>
+  readonly readEvents: (
+    sql: SqlClient.SqlClient,
+    entity: string,
+    after: number,
+  ) => Effect.Effect<Array<PersistedEvent<unknown>>, unknown>
+  readonly writeSnapshot: (sql: SqlClient.SqlClient, entity: string, snapshot: Snapshot<unknown>) => Effect.Effect<void, unknown>
+  readonly appendEvent: (sql: SqlClient.SqlClient, entity: string, event: PersistedEvent<unknown>) => Effect.Effect<void, unknown>
+  /** Folds the journal into the snapshot and deletes the folded events, in one transaction. */
+  readonly compact: (sql: SqlClient.SqlClient, entity: string) => Effect.Effect<Option.Option<Snapshot<unknown>>, unknown>
 }
 
 export const journaled = <S extends { readonly _tag: string }, E extends { readonly _tag: string }>(
   machine: Machine.Machine<S, E, never, any, any, void, any>,
-): Journaled => ({
-  state: machine.stateSchema,
-  event: machine.eventSchema,
-  initial: machine.initial,
-  // The store decodes events and state with this machine's own schemas before it replays them.
-  replay: (events, from) => Machine.replay(machine, events as ReadonlyArray<E>, { from: from as S }),
-})
+): Journaled => {
+  const state: Schema.Codec<S, Schema.Json> = Schema.toCodecJson(machine.stateSchema)
+  const event: Schema.Codec<E, Schema.Json> = Schema.toCodecJson(machine.eventSchema)
+
+  const readSnapshot = (sql: SqlClient.SqlClient, entity: string) =>
+    Effect.gen(function* () {
+      const rows = yield* sql<{ state: string; version: number; timestamp: number }>`
+        SELECT state, version, timestamp FROM machine_snapshot WHERE entity = ${entity}`
+
+      const row = rows[0]
+
+      if (row === undefined) return Option.none<Snapshot<S>>()
+      const decoded = yield* Schema.decodeUnknownEffect(state)(JSON.parse(row.state))
+
+      return Option.some({ state: decoded, version: row.version, timestamp: row.timestamp })
+    })
+
+  const readEvents = (sql: SqlClient.SqlClient, entity: string, after: number) =>
+    Effect.gen(function* () {
+      const rows = yield* sql<{ event: string; version: number; timestamp: number }>`
+        SELECT event, version, timestamp FROM machine_event
+        WHERE entity = ${entity} AND version > ${after} ORDER BY version`
+
+      const events: Array<PersistedEvent<E>> = []
+
+      for (const row of rows) {
+        const decoded = yield* Schema.decodeUnknownEffect(event)(JSON.parse(row.event))
+        events.push({ event: decoded, version: row.version, timestamp: row.timestamp })
+      }
+
+      return events
+    })
+
+  const writeSnapshot = (sql: SqlClient.SqlClient, entity: string, snapshot: Snapshot<unknown>) =>
+    Effect.gen(function* () {
+      const encoded = JSON.stringify(yield* Schema.encodeUnknownEffect(state)(snapshot.state))
+      yield* sql`INSERT INTO machine_snapshot (entity, state, version, timestamp)
+        VALUES (${entity}, ${encoded}, ${snapshot.version}, ${snapshot.timestamp})
+        ON CONFLICT (entity) DO UPDATE SET state = excluded.state, version = excluded.version,
+          timestamp = excluded.timestamp`
+    })
+
+  const appendEvent = (sql: SqlClient.SqlClient, entity: string, persisted: PersistedEvent<unknown>) =>
+    Effect.gen(function* () {
+      const encoded = JSON.stringify(yield* Schema.encodeUnknownEffect(event)(persisted.event))
+      yield* sql`INSERT INTO machine_event (entity, version, event, timestamp)
+        VALUES (${entity}, ${persisted.version}, ${encoded}, ${persisted.timestamp})`
+    })
+
+  const compact = (sql: SqlClient.SqlClient, entity: string) =>
+    Effect.gen(function* () {
+      const snapshot = yield* readSnapshot(sql, entity)
+      const events = yield* readEvents(sql, entity, Option.match(snapshot, { onNone: () => 0, onSome: (s) => s.version }))
+      const last = events.at(-1)
+
+      if (last === undefined) return snapshot
+
+      const folded = {
+        state: yield* Machine.replay(
+          machine,
+          events.map((persisted) => persisted.event),
+          Option.match(snapshot, { onNone: () => ({}), onSome: (s) => ({ from: s.state }) }),
+        ),
+        version: last.version,
+        timestamp: last.timestamp,
+      }
+
+      yield* sql.withTransaction(
+        Effect.andThen(
+          writeSnapshot(sql, entity, folded),
+          sql`DELETE FROM machine_event WHERE entity = ${entity} AND version <= ${last.version}`,
+        ),
+      )
+
+      return Option.some(folded)
+    })
+
+  return { readSnapshot, readEvents, writeSnapshot, appendEvent, compact }
+}
 
 /** A wake replays at most this many events before the journal is folded into a snapshot. */
 const compactOnLoad = 50
@@ -63,86 +146,12 @@ export const layerSqlite = (
 
     return machine === undefined
       ? Effect.fail(new PersistenceError({ message: `no machine for entity type ${key.entityType}` }))
-      : Effect.succeed({
-          machine,
-          state: Schema.toCodecJson(machine.state),
-          event: Schema.toCodecJson(machine.event),
-        })
+      : Effect.succeed(machine)
   }
 
   const entity = (key: PersistenceKey) => `${key.entityType}/${key.entityId}`
   // On celld the database exists only inside an entity's Durable Object, so each call resolves it.
   const client = Effect.tap(database, tables)
-
-  const readSnapshot = (sql: SqlClient.SqlClient, key: PersistenceKey) =>
-    Effect.gen(function* () {
-      const { state } = yield* machineFor(key)
-
-      const rows = yield* sql<{ state: string; version: number; timestamp: number }>`
-        SELECT state, version, timestamp FROM machine_snapshot WHERE entity = ${entity(key)}`
-
-      const row = rows[0]
-
-      if (row === undefined) return Option.none<Snapshot<unknown>>()
-      const decoded = yield* Schema.decodeUnknownEffect(state)(JSON.parse(row.state))
-
-      return Option.some({ state: decoded, version: row.version, timestamp: row.timestamp })
-    })
-
-  const readEvents = (sql: SqlClient.SqlClient, key: PersistenceKey, after: number) =>
-    Effect.gen(function* () {
-      const { event } = yield* machineFor(key)
-
-      const rows = yield* sql<{ event: string; version: number; timestamp: number }>`
-        SELECT event, version, timestamp FROM machine_event
-        WHERE entity = ${entity(key)} AND version > ${after} ORDER BY version`
-
-      const events: Array<PersistedEvent<unknown>> = []
-
-      for (const row of rows) {
-        const decoded = yield* Schema.decodeUnknownEffect(event)(JSON.parse(row.event))
-        events.push({ event: decoded, version: row.version, timestamp: row.timestamp })
-      }
-
-      return events
-    })
-
-  const writeSnapshot = (sql: SqlClient.SqlClient, key: PersistenceKey, snapshot: Snapshot<unknown>) =>
-    Effect.gen(function* () {
-      const { state } = yield* machineFor(key)
-      const encoded = JSON.stringify(yield* Schema.encodeUnknownEffect(state)(snapshot.state))
-      yield* sql`INSERT INTO machine_snapshot (entity, state, version, timestamp)
-        VALUES (${entity(key)}, ${encoded}, ${snapshot.version}, ${snapshot.timestamp})
-        ON CONFLICT (entity) DO UPDATE SET state = excluded.state, version = excluded.version,
-          timestamp = excluded.timestamp`
-    })
-
-  /** Folds the journal into the snapshot and deletes the folded events, in one transaction. */
-  const compact = (sql: SqlClient.SqlClient, key: PersistenceKey) =>
-    Effect.gen(function* () {
-      const { machine } = yield* machineFor(key)
-      const snapshot = yield* readSnapshot(sql, key)
-      const events = yield* readEvents(sql, key, Option.match(snapshot, { onNone: () => 0, onSome: (s) => s.version }))
-      const last = events.at(-1)
-
-      if (last === undefined) return snapshot
-      const from = Option.match(snapshot, { onNone: () => machine.initial, onSome: (s) => s.state })
-
-      const state = yield* machine.replay(
-        events.map((persisted) => persisted.event),
-        from,
-      )
-
-      const folded = { state, version: last.version, timestamp: last.timestamp }
-      yield* sql.withTransaction(
-        Effect.andThen(
-          writeSnapshot(sql, key, folded),
-          sql`DELETE FROM machine_event WHERE entity = ${entity(key)} AND version <= ${last.version}`,
-        ),
-      )
-
-      return Option.some(folded)
-    })
 
   const pending = (sql: SqlClient.SqlClient, key: PersistenceKey) =>
     Effect.map(
@@ -150,23 +159,27 @@ export const layerSqlite = (
       (rows) => rows[0]?.count ?? 0,
     )
 
+  /** The database and the machine of a cell. */
+  const open = (key: PersistenceKey) => Effect.all({ sql: client, machine: machineFor(key) })
+
   const adapter: PersistenceAdapterInterface = {
     saveSnapshot: (key, snapshot) =>
-      Effect.flatMap(client, (sql) => writeSnapshot(sql, key, snapshot)).pipe(Effect.mapError(failed("save snapshot"))),
+      Effect.flatMap(open(key), ({ sql, machine }) => machine.writeSnapshot(sql, entity(key), snapshot)).pipe(
+        Effect.mapError(failed("save snapshot")),
+      ),
 
     loadSnapshot: (key) =>
       Effect.gen(function* () {
-        const sql = yield* client
+        const { sql, machine } = yield* open(key)
 
-        if ((yield* pending(sql, key)) > compactOnLoad) return yield* compact(sql, key)
+        if ((yield* pending(sql, key)) > compactOnLoad) return yield* machine.compact(sql, entity(key))
 
-        return yield* readSnapshot(sql, key)
+        return yield* machine.readSnapshot(sql, entity(key))
       }).pipe(Effect.mapError(failed("load snapshot"))),
 
     appendEvents: (key, events, expectedVersion) =>
       Effect.gen(function* () {
-        const sql = yield* client
-        const { event } = yield* machineFor(key)
+        const { sql, machine } = yield* open(key)
 
         const rows = yield* sql<{ version: number | null }>`
           SELECT MAX(version) AS version FROM (
@@ -179,19 +192,15 @@ export const layerSqlite = (
           return yield* new VersionConflictError({ expected: expectedVersion, actual })
         }
 
-        for (const persisted of events) {
-          const encoded = JSON.stringify(yield* Schema.encodeUnknownEffect(event)(persisted.event))
-          yield* sql`INSERT INTO machine_event (entity, version, event, timestamp)
-            VALUES (${entity(key)}, ${persisted.version}, ${encoded}, ${persisted.timestamp})`
-        }
+        for (const persisted of events) yield* machine.appendEvent(sql, entity(key), persisted)
 
-        if ((yield* pending(sql, key)) >= compactOnAppend) yield* compact(sql, key)
+        if ((yield* pending(sql, key)) >= compactOnAppend) yield* machine.compact(sql, entity(key))
       }).pipe(
         Effect.mapError((cause) => (cause instanceof VersionConflictError ? cause : failed("append events")(cause))),
       ),
 
     loadEvents: (key, afterVersion) =>
-      Effect.flatMap(client, (sql) => readEvents(sql, key, afterVersion ?? 0)).pipe(
+      Effect.flatMap(open(key), ({ sql, machine }) => machine.readEvents(sql, entity(key), afterVersion ?? 0)).pipe(
         Effect.mapError(failed("load events")),
       ),
   }

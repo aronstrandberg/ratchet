@@ -15,6 +15,14 @@ export const Ci = Schema.TaggedUnion({
 
 export type Ci = typeof Ci.Type
 
+/** The counted checks that have failed so far. */
+export const failedChecks = (ci: Ci): ReadonlyArray<string> =>
+  Ci.match(ci, {
+    Running: () => [],
+    Failing: ({ failed }) => failed,
+    Finished: ({ failed }) => failed,
+  })
+
 /** A task that follows this pull request, and the session of it that attached. */
 export const Subscriber = Schema.Struct({ task: Schema.String, session: Schema.String, relation: Relation })
 
@@ -58,10 +66,10 @@ const ci = (checks: ReadonlyArray<Check>): Ci => {
   const failed = counted.filter((check) => check.state === "failure").map((check) => check.name)
 
   if (counted.some((check) => check.state === "pending")) {
-    return failed.length > 0 ? { _tag: "Failing", failed } : { _tag: "Running" }
+    return failed.length > 0 ? Ci.cases.Failing.make({ failed }) : Ci.cases.Running.make({})
   }
 
-  return { _tag: "Finished", failed }
+  return Ci.cases.Finished.make({ failed })
 }
 
 const project = (facts: PullRequestFacts, subscribers: ReadonlyArray<Subscriber>) => {
@@ -87,20 +95,6 @@ const project = (facts: PullRequestFacts, subscribers: ReadonlyArray<Subscriber>
 
 const any = [PullRequestState.Unseen, PullRequestState.Open, PullRequestState.Merged, PullRequestState.Closed] as const
 
-/** The same state with another list of subscribers. */
-const withSubscribers = (state: PullRequestState, subscribers: ReadonlyArray<Subscriber>): PullRequestState => {
-  switch (state._tag) {
-    case "Unseen":
-      return PullRequestState.Unseen({ subscribers })
-    case "Open":
-      return PullRequestState.Open({ ...state, subscribers })
-    case "Merged":
-      return PullRequestState.Merged({ ref: state.ref, title: state.title, subscribers })
-    case "Closed":
-      return PullRequestState.Closed({ ref: state.ref, title: state.title, subscribers })
-  }
-}
-
 export const pullRequestMachine = Machine.make({
   state: PullRequestState,
   event: PullRequestEvent,
@@ -108,16 +102,12 @@ export const pullRequestMachine = Machine.make({
 })
   .on(any, PullRequestEvent.Observed, ({ state, event }) => project(event.facts, state.subscribers))
   .on(any, PullRequestEvent.Attached, ({ state, event }) =>
-    withSubscribers(state, [
-      ...state.subscribers.filter((s) => s.task !== event.subscriber.task),
-      event.subscriber,
-    ]),
+    PullRequestState.with(state, {
+      subscribers: [...state.subscribers.filter((s) => s.task !== event.subscriber.task), event.subscriber],
+    }),
   )
   .on(any, PullRequestEvent.Detached, ({ state, event }) =>
-    withSubscribers(
-      state,
-      state.subscribers.filter((s) => s.task !== event.task),
-    ),
+    PullRequestState.with(state, { subscribers: state.subscribers.filter((s) => s.task !== event.task) }),
   )
 
 export const PullRequestEntity = toEntity(pullRequestMachine, { type: "PullRequest" })
@@ -148,33 +138,42 @@ export type Change = typeof Change.Type
  * The first observation of an open pull request reports nothing: a task that attaches reads the state itself.
  * My own reviews and threads are not changes, because my sessions post under my login.
  */
-export const changes = (before: PullRequestState, after: PullRequestState): ReadonlyArray<Change> => {
-  if (after._tag === "Merged") return before._tag === "Merged" ? [] : [{ _tag: "Merged" }]
+export const changes = (before: PullRequestState, after: PullRequestState): ReadonlyArray<Change> =>
+  PullRequestState.$match<ReadonlyArray<Change>>(after, {
+    Unseen: () => [],
+    Merged: () => (isMerged(before) ? [] : [Change.cases.Merged.make({})]),
+    Closed: () => (isClosed(before) ? [] : [Change.cases.Closed.make({})]),
+    Open: (open) => (isOpen(before) ? changesWhileOpen(before, open) : []),
+  })
 
-  if (after._tag === "Closed") return before._tag === "Closed" ? [] : [{ _tag: "Closed" }]
+type Open = typeof PullRequestState.variants.Open.Type
 
-  if (after._tag !== "Open" || before._tag !== "Open") return []
+const isOpen = PullRequestState.$is("Open")
+const isMerged = PullRequestState.$is("Merged")
+const isClosed = PullRequestState.$is("Closed")
 
+const changesWhileOpen = (before: Open, after: Open): ReadonlyArray<Change> => {
   const found: Array<Change> = []
   const sameHead = before.head === after.head
 
-  if (!sameHead) found.push({ _tag: "HeadMoved", head: after.head })
+  if (!sameHead) found.push(Change.cases.HeadMoved.make({ head: after.head }))
 
-  const ciBefore = sameHead ? before.ci._tag : "Running"
+  // A new head starts CI over, whatever the old head's CI said.
+  const ciBefore = sameHead ? before.ci : Ci.cases.Running.make({})
 
-  if (after.ci._tag === "Failing" && ciBefore === "Running") {
-    found.push({ _tag: "CiFailing", head: after.head, failed: after.ci.failed })
+  if (Ci.guards.Failing(after.ci) && Ci.guards.Running(ciBefore)) {
+    found.push(Change.cases.CiFailing.make({ head: after.head, failed: after.ci.failed }))
   }
 
-  if (after.ci._tag === "Finished" && ciBefore !== "Finished") {
-    found.push({ _tag: "CiFinished", head: after.head, failed: after.ci.failed })
+  if (Ci.guards.Finished(after.ci) && !Ci.guards.Finished(ciBefore)) {
+    found.push(Change.cases.CiFinished.make({ head: after.head, failed: after.ci.failed }))
   }
 
   const seenReviews = new Set(before.reviews.map((review) => review.id))
 
   for (const review of after.reviews) {
     if (!seenReviews.has(review.id) && review.state !== "pending" && review.author !== after.viewer) {
-      found.push({ _tag: "ReviewSubmitted", author: review.author, state: review.state })
+      found.push(Change.cases.ReviewSubmitted.make({ author: review.author, state: review.state }))
     }
   }
 
@@ -184,19 +183,19 @@ export const changes = (before: PullRequestState, after: PullRequestState): Read
     const known = threadsBefore.get(thread.id)
 
     if (known === undefined && !thread.resolved && thread.author !== after.viewer) {
-      found.push({ _tag: "ThreadOpened", thread: thread.id, author: thread.author })
+      found.push(Change.cases.ThreadOpened.make({ thread: thread.id, author: thread.author }))
     }
 
     if (known !== undefined && !known.resolved && thread.resolved) {
-      found.push({ _tag: "ThreadResolved", thread: thread.id })
+      found.push(Change.cases.ThreadResolved.make({ thread: thread.id }))
     }
   }
 
-  if (after.conflicting && !before.conflicting) found.push({ _tag: "Conflicting" })
+  if (after.conflicting && !before.conflicting) found.push(Change.cases.Conflicting.make({}))
 
-  if (after.queued && !before.queued) found.push({ _tag: "Queued" })
+  if (after.queued && !before.queued) found.push(Change.cases.Queued.make({}))
 
-  if (!after.queued && before.queued) found.push({ _tag: "Dequeued" })
+  if (!after.queued && before.queued) found.push(Change.cases.Dequeued.make({}))
 
   return found
 }
@@ -212,40 +211,33 @@ export const wakes = (relation: Relation, change: Change): boolean => {
     case "context":
       return false
     case "waits_on":
-      return change._tag === "Merged" || change._tag === "Closed"
+      return isEnd(change)
     case "owns":
-      return change._tag !== "ThreadResolved" && change._tag !== "Queued" && change._tag !== "HeadMoved"
+      return !needsNoAction(change)
   }
 }
+
+const isEnd = Change.isAnyOf(["Merged", "Closed"])
+const needsNoAction = Change.isAnyOf(["ThreadResolved", "Queued", "HeadMoved"])
 
 const short = (head: string) => head.slice(0, 7)
 
 /** One line a session can read, for one change. It holds no text written by other people. */
-export const describe = (change: Change): string => {
-  switch (change._tag) {
-    case "HeadMoved":
-      return `The head moved to ${short(change.head)}.`
-    case "CiFailing":
-      return `CI is failing on ${short(change.head)} while other checks still run: ${change.failed.join(", ")}.`
-    case "CiFinished":
-      return change.failed.length === 0
-        ? `CI passed on ${short(change.head)}.`
-        : `CI finished on ${short(change.head)} with failing required checks: ${change.failed.join(", ")}.`
-    case "ReviewSubmitted":
-      return `${change.author} submitted a review: ${change.state.replace("_", " ")}.`
-    case "ThreadOpened":
-      return `${change.author} opened a review thread.`
-    case "ThreadResolved":
-      return "A review thread was resolved."
-    case "Conflicting":
-      return "It has a merge conflict with its base."
-    case "Queued":
-      return "It entered the merge queue."
-    case "Dequeued":
-      return "It was removed from the merge queue without merging."
-    case "Merged":
-      return "It merged."
-    case "Closed":
-      return "It was closed without merging."
-  }
-}
+export const describe = (change: Change): string =>
+  Change.match(change, {
+    HeadMoved: ({ head }) => `The head moved to ${short(head)}.`,
+    CiFailing: ({ head, failed }) =>
+      `CI is failing on ${short(head)} while other checks still run: ${failed.join(", ")}.`,
+    CiFinished: ({ head, failed }) =>
+      failed.length === 0
+        ? `CI passed on ${short(head)}.`
+        : `CI finished on ${short(head)} with failing required checks: ${failed.join(", ")}.`,
+    ReviewSubmitted: ({ author, state }) => `${author} submitted a review: ${state.replace("_", " ")}.`,
+    ThreadOpened: ({ author }) => `${author} opened a review thread.`,
+    ThreadResolved: () => "A review thread was resolved.",
+    Conflicting: () => "It has a merge conflict with its base.",
+    Queued: () => "It entered the merge queue.",
+    Dequeued: () => "It was removed from the merge queue without merging.",
+    Merged: () => "It merged.",
+    Closed: () => "It was closed without merging.",
+  })

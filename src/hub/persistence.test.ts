@@ -1,11 +1,11 @@
 import { expect, test } from "bun:test"
 import { SqliteClient } from "@effect/sql-sqlite-bun"
-import { Effect, Option } from "effect"
+import { Effect, Option, Schema } from "effect"
 import { Machine } from "effect-machine"
 import { PersistenceAdapter } from "effect-machine/cluster"
 import { SqlClient } from "effect/sql"
 import * as Persistence from "./persistence.ts"
-import { TaskEvent, TaskState, taskMachine } from "./task.ts"
+import { TaskEvent, taskMachine } from "./task.ts"
 
 const key = { entityType: "Task", entityId: "t1" }
 
@@ -16,6 +16,10 @@ const withStore = <A, E>(use: (adapter: typeof PersistenceAdapter.Service, sql: 
 
     return yield* Effect.flatMap(PersistenceAdapter, (adapter) => use(adapter, sql)).pipe(Effect.provide(layer))
   }).pipe(Effect.provide(SqliteClient.layer({ filename: ":memory:" })), Effect.runPromise)
+
+// The adapter hands back states and events without their types.
+const asState = Schema.decodeUnknownSync(Schema.toType(taskMachine.stateSchema))
+const asEvent = Schema.decodeUnknownSync(Schema.toType(taskMachine.eventSchema))
 
 const journal = (count: number) => [
   TaskEvent.Created({ title: "first", parent: null, session: "ses_1" }),
@@ -38,9 +42,11 @@ test("folding a long journal into a snapshot loses no accepted event", () =>
       const snapshot = Option.getOrThrow(yield* adapter.loadSnapshot(key))
       const rest = yield* adapter.loadEvents(key, snapshot.version)
 
-      const woken = yield* Machine.replay(taskMachine, rest.map((e) => e.event as typeof TaskEvent.Type), {
-        from: snapshot.state as TaskState,
-      })
+      const woken = yield* Machine.replay(
+        taskMachine,
+        rest.map((persisted) => asEvent(persisted.event)),
+        { from: asState(snapshot.state) },
+      )
 
       const expected = yield* Machine.replay(taskMachine, events)
       expect(woken).toEqual(expected)

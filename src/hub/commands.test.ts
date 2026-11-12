@@ -4,14 +4,10 @@ import { TestRunner } from "effect/cluster"
 import { EntityMachine } from "effect-machine/cluster"
 import * as Commands from "./commands.ts"
 import * as Facts from "./facts.ts"
+import { SessionFact, SessionOrigin } from "../protocol/session.ts"
 import { SessionEntity, sessionMachine } from "./session.ts"
 import { TaskEntity, taskMachine } from "./task.ts"
-
-/** An index that accepts every write, for tests that only read the cells. */
-const noIndex = {
-  exec: async () => ({}),
-  prepare: () => ({ bind: () => ({ run: async () => ({}) }) }),
-} as unknown as D1Database
+import { noIndex } from "./testing.ts"
 
 const cells = Layer.mergeAll(
   EntityMachine.layer(TaskEntity, taskMachine),
@@ -24,15 +20,17 @@ const run = <A, E>(program: Effect.Effect<A, E, Layer.Success<typeof cells>>) =>
 test("a session that starts a new task takes its running state, subagents and questions along", () =>
   run(
     Effect.gen(function* () {
-      yield* Facts.apply(noIndex, {
-        _tag: "Opened",
-        session: "ses_a",
-        title: "Fix the runner",
-        origin: { _tag: "Root" },
-        running: true,
-        subagents: ["ses_watch", "ses_work"],
-        questions: [{ id: "q1", kind: "form", title: "Which pool?" }],
-      })
+      yield* Facts.apply(
+        noIndex,
+        SessionFact.cases.Opened.make({
+          session: "ses_a",
+          title: "Fix the runner",
+          origin: SessionOrigin.cases.Root.make({}),
+          running: true,
+          subagents: ["ses_watch", "ses_work"],
+          questions: [{ id: "q1", kind: "form", title: "Which pool?" }],
+        }),
+      )
       yield* Commands.declareSubagent(noIndex, "ses_a", "ses_watch", "watching")
 
       const started = yield* Commands.start(noIndex, "ses_a", "Storage roller traces", "child")
@@ -54,19 +52,24 @@ test("a session that starts a new task takes its running state, subagents and qu
 test("a task whose only running subagent watches is not shown as being worked on", () =>
   run(
     Effect.gen(function* () {
-      yield* Facts.apply(noIndex, {
-        _tag: "Opened",
-        session: "ses_b",
-        title: "Queue depth",
-        origin: { _tag: "Root" },
-        running: false,
-        subagents: ["ses_watch"],
-        questions: [],
-      })
+      yield* Facts.apply(
+        noIndex,
+        SessionFact.cases.Opened.make({
+          session: "ses_b",
+          title: "Queue depth",
+          origin: SessionOrigin.cases.Root.make({}),
+          running: false,
+          subagents: ["ses_watch"],
+          questions: [],
+        }),
+      )
       expect((yield* Commands.current("ses_b")).state).toBe("Working")
       const declared = yield* Commands.declareSubagent(noIndex, "ses_b", "ses_watch", "watching")
       expect(declared.state).toBe("Watching")
-      yield* Facts.apply(noIndex, { _tag: "Asked", of: "ses_b", question: { id: "p1", kind: "permission", title: "run" } })
+      yield* Facts.apply(
+        noIndex,
+        SessionFact.cases.Asked.make({ of: "ses_b", question: { id: "p1", kind: "permission", title: "run" } }),
+      )
       expect((yield* Commands.current("ses_b")).state).toBe("NeedsMe")
     }),
   ))

@@ -1,7 +1,7 @@
 import { Effect, Schema } from "effect"
-import { SessionEntity, SessionEvent } from "./session.ts"
+import { SessionEntity, SessionEvent, boundTask } from "./session.ts"
 import * as Index from "./index-store.ts"
-import { TaskEntity, TaskEvent, type TaskState } from "./task.ts"
+import { type LiveTask, TaskEntity, TaskEvent, isUnborn } from "./task.ts"
 
 /** A task as a session sees it. */
 export const TaskView = Schema.Struct({
@@ -18,7 +18,7 @@ export type TaskView = typeof TaskView.Type
 
 export class NoTask extends Schema.TaggedError<NoTask>()("NoTask", { session: Schema.String }) {}
 
-const view = (id: string, state: Exclude<TaskState, { _tag: "Unborn" }>): TaskView => ({
+const view = (id: string, state: LiveTask): TaskView => ({
   id,
   title: state.title,
   state: state._tag,
@@ -28,9 +28,14 @@ const view = (id: string, state: Exclude<TaskState, { _tag: "Unborn" }>): TaskVi
   questions: state.questions.map((question) => question.title),
 })
 
-const taskOf = (session: string) =>
+/** The task a session works on now. It fails for a session the hub has not bound to a task. */
+export const taskOf = (session: string) =>
   Effect.flatMap(SessionEntity.client, (sessions) => sessions(session).GetState()).pipe(
-    Effect.flatMap((state) => (state._tag === "Bound" ? Effect.succeed(state.task) : Effect.fail(new NoTask({ session })))),
+    Effect.flatMap((state) => {
+      const task = boundTask(state)
+
+      return task === null ? Effect.fail(new NoTask({ session })) : Effect.succeed(task)
+    }),
   )
 
 const stateOf = (session: string) =>
@@ -38,7 +43,7 @@ const stateOf = (session: string) =>
     const id = yield* taskOf(session)
     const state = yield* (yield* TaskEntity.client)(id).GetState()
 
-    if (state._tag === "Unborn") return yield* new NoTask({ session })
+    if (isUnborn(state)) return yield* new NoTask({ session })
 
     return { id, state }
   })
@@ -51,7 +56,7 @@ export const current = (session: string) => Effect.map(stateOf(session), ({ id, 
  *
  * What the old task held for this session moves along: that it runs, its subagents and its open questions.
  */
-export const start = (db: D1Database, session: string, title: string, relation: "child" | "sibling") =>
+export const start = (db: Index.Database, session: string, title: string, relation: "child" | "sibling") =>
   Effect.gen(function* () {
     const tasks = yield* TaskEntity.client
     const sessions = yield* SessionEntity.client
@@ -88,19 +93,19 @@ export const start = (db: D1Database, session: string, title: string, relation: 
     yield* sessions(session).Send({ event: SessionEvent.Bound({ task: id }) })
     yield* send(from.id, TaskEvent.Observed({ session, running: false, subagents: [], questions: [] }))
 
-    if (state._tag === "Unborn") return yield* new NoTask({ session })
+    if (isUnborn(state)) return yield* new NoTask({ session })
 
     return { task: view(id, state), left: from.id }
   })
 
 /** Records what a subagent of the session is for. */
-export const declareSubagent = (db: D1Database, session: string, subagent: string, kind: "working" | "watching") =>
+export const declareSubagent = (db: Index.Database, session: string, subagent: string, kind: "working" | "watching") =>
   Effect.gen(function* () {
     const id = yield* taskOf(session)
     const state = yield* (yield* TaskEntity.client)(id).Send({ event: TaskEvent.SubagentDeclared({ session: subagent, kind }) })
     yield* Index.put(db, id, state)
 
-    if (state._tag === "Unborn") return yield* new NoTask({ session })
+    if (isUnborn(state)) return yield* new NoTask({ session })
 
     return view(id, state)
   })

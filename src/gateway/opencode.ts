@@ -1,7 +1,7 @@
-import { Effect, Schema, Stream } from "effect"
+import { Effect, Option, Schema, Stream } from "effect"
 import { Sse } from "effect/encoding"
 import { FetchHttpClient, HttpClient, HttpClientRequest, HttpClientResponse } from "effect/http"
-import type { Question, SessionFact, SessionOrigin } from "../protocol/session.ts"
+import { type Question, SessionFact, SessionOrigin } from "../protocol/session.ts"
 
 export interface Config {
   readonly url: string
@@ -129,8 +129,10 @@ const mainOf = (config: Config, known: Map<string, string>, id: string): Effect.
     return main
   })
 
+const Fact = SessionFact.cases
+
 const origin = (info: SessionInfo): SessionOrigin =>
-  info.fork === undefined ? { _tag: "Root" } : { _tag: "Fork", of: info.fork.sessionID }
+  info.fork === undefined ? SessionOrigin.cases.Root.make({}) : SessionOrigin.cases.Fork.make({ of: info.fork.sessionID })
 
 export interface Snapshot {
   /** One `Opened` fact per main session that is not archived, oldest first. */
@@ -147,18 +149,17 @@ export interface Snapshot {
 export const snapshot = (config: Config): Effect.Effect<Snapshot, unknown> =>
   Effect.gen(function* () {
     const sessions: Array<SessionInfo> = []
-    let cursor: string | null | undefined = undefined
+    // parentID=null leaves out subagent sessions.
+    const firstPage = { limit: "200", order: "asc", archived: "false", parentID: "null" }
+    let cursor: string | undefined = undefined
 
     for (let page = 0; page < 50; page++) {
-      // parentID=null leaves out subagent sessions.
-      const urlParams: Record<string, string> = { limit: "200", order: "asc", archived: "false", parentID: "null" }
-
-      if (typeof cursor === "string") urlParams["cursor"] = cursor
+      const urlParams = cursor === undefined ? firstPage : { ...firstPage, cursor }
       const body: typeof SessionPage.Type = yield* getJson(SessionPage)(config, "/api/session", urlParams)
       sessions.push(...body.data)
-      cursor = body.cursor?.next
+      cursor = body.cursor?.next ?? undefined
 
-      if (typeof cursor !== "string" || body.data.length === 0) break
+      if (cursor === undefined || body.data.length === 0) break
     }
 
     const mains = sessions
@@ -183,9 +184,8 @@ export const snapshot = (config: Config): Effect.Effect<Snapshot, unknown> =>
 
     return {
       sessions: mains,
-      facts: mains.map(
-        (info): SessionFact => ({
-          _tag: "Opened",
+      facts: mains.map((info) =>
+        Fact.Opened.make({
           session: info.id,
           title: info.title ?? null,
           origin: origin(info),
@@ -222,28 +222,27 @@ export const facts = (config: Config): Stream.Stream<SessionFact, unknown> => {
           if (info.parentID !== undefined) return none
 
           return [
-            {
-              _tag: "Opened",
+            Fact.Opened.make({
               session: id,
               title: info.title ?? null,
               origin: origin(info),
               running: false,
               subagents: [],
               questions: [],
-            },
+            }),
           ]
         }
 
         case "session.renamed": {
           const main = yield* mainOf(config, known, id)
 
-          return main !== id || data.title === undefined ? none : [{ _tag: "Renamed", session: id, title: data.title }]
+          return main !== id || data.title === undefined ? none : [Fact.Renamed.make({ session: id, title: data.title })]
         }
 
         case "session.execution.started": {
           const main = yield* mainOf(config, known, id)
 
-          return [main === id ? { _tag: "Started", session: id } : { _tag: "SubagentStarted", of: main, session: id }]
+          return [main === id ? Fact.Started.make({ session: id }) : Fact.SubagentStarted.make({ of: main, session: id })]
         }
 
         case "session.execution.succeeded":
@@ -252,14 +251,14 @@ export const facts = (config: Config): Stream.Stream<SessionFact, unknown> => {
         case "session.idle": {
           const main = yield* mainOf(config, known, id)
 
-          return [main === id ? { _tag: "Idle", session: id } : { _tag: "SubagentStopped", of: main, session: id }]
+          return [main === id ? Fact.Idle.make({ session: id }) : Fact.SubagentStopped.make({ of: main, session: id })]
         }
 
         case "form.created": {
           if (data.form === undefined) return none
           const main = yield* mainOf(config, known, id)
 
-          return [{ _tag: "Asked", of: main, question: { id: data.form.id, kind: "form", title: data.form.title } }]
+          return [Fact.Asked.make({ of: main, question: { id: data.form.id, kind: "form", title: data.form.title } })]
         }
 
         case "permission.asked": {
@@ -267,7 +266,7 @@ export const facts = (config: Config): Stream.Stream<SessionFact, unknown> => {
           const main = yield* mainOf(config, known, id)
           const title = permissionTitle(data.action, data.resources)
 
-          return [{ _tag: "Asked", of: main, question: { id: data.id, kind: "permission", title } }]
+          return [Fact.Asked.make({ of: main, question: { id: data.id, kind: "permission", title } })]
         }
 
         case "form.replied":
@@ -278,7 +277,7 @@ export const facts = (config: Config): Stream.Stream<SessionFact, unknown> => {
           if (answered === undefined) return none
           const main = yield* mainOf(config, known, id)
 
-          return [{ _tag: "Answered", of: main, id: answered }]
+          return [Fact.Answered.make({ of: main, id: answered })]
         }
 
         default:
@@ -300,6 +299,9 @@ export const facts = (config: Config): Stream.Stream<SessionFact, unknown> => {
   ).pipe(Stream.provide(FetchHttpClient.layer))
 }
 
+/** What Ratchet keeps in a session's metadata, under `ratchet`. */
+const RecordedTask = Schema.Struct({ task: Schema.String })
+
 /**
  * Records a session's task in the session's own metadata, under `ratchet.task`.
  *
@@ -307,9 +309,9 @@ export const facts = (config: Config): Stream.Stream<SessionFact, unknown> => {
  */
 export const recordTask = (config: Config, info: SessionInfo, task: string): Effect.Effect<boolean, unknown> =>
   Effect.gen(function* () {
-    const ratchet = info.metadata?.["ratchet"]
+    const recorded = Schema.decodeUnknownOption(RecordedTask)(info.metadata?.["ratchet"])
 
-    if (typeof ratchet === "object" && ratchet !== null && (ratchet as { task?: unknown }).task === task) return false
+    if (Option.isSome(recorded) && recorded.value.task === task) return false
     const http = yield* client(config)
     yield* HttpClientRequest.patch(`/api/session/${info.id}`).pipe(
       HttpClientRequest.bodyJsonUnsafe({ metadata: { ...info.metadata, ratchet: { task } } }),
@@ -332,10 +334,9 @@ export const fork = (config: Config, id: string, title: string, prompt: string):
   Effect.gen(function* () {
     const http = yield* client(config)
 
-    const post = (path: string, body: unknown) =>
-      HttpClientRequest.post(path).pipe(HttpClientRequest.bodyJsonUnsafe(body), http.execute)
-
-    const forked = yield* post(`/api/session/${id}/fork`, {}).pipe(
+    const forked = yield* HttpClientRequest.post(`/api/session/${id}/fork`).pipe(
+      HttpClientRequest.bodyJsonUnsafe({}),
+      http.execute,
       Effect.flatMap(HttpClientResponse.schemaBodyJson(Schema.Struct({ data: SessionInfo }))),
     )
 
@@ -343,7 +344,10 @@ export const fork = (config: Config, id: string, title: string, prompt: string):
       HttpClientRequest.bodyJsonUnsafe({ title }),
       http.execute,
     )
-    yield* post(`/api/session/${forked.data.id}/prompt`, { text: prompt })
+    yield* HttpClientRequest.post(`/api/session/${forked.data.id}/prompt`).pipe(
+      HttpClientRequest.bodyJsonUnsafe({ text: prompt }),
+      http.execute,
+    )
 
     return forked.data.id
   }).pipe(Effect.provide(FetchHttpClient.layer), Effect.withSpan("OpenCode.fork"))

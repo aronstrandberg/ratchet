@@ -38,7 +38,10 @@ const layer = (env: Env) =>
     ),
   )
 
-export type Runtime = ManagedRuntime.ManagedRuntime<Layer.Success<ReturnType<typeof layer>>, never>
+/** What an effect may require when it runs on the hub's runtime. */
+export type Services = Layer.Success<ReturnType<typeof layer>>
+
+export type Runtime = ManagedRuntime.ManagedRuntime<Services, never>
 
 let application: Runtime | undefined
 

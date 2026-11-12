@@ -89,6 +89,7 @@ const Response = Schema.Struct({
   ),
 })
 
+// SAFETY: toLowerCase of a string literal is the literal that Lowercase names.
 const lower = <A extends string>(value: A) => value.toLowerCase() as Lowercase<A>
 
 const check = (context: typeof Context.Type): Check => {

@@ -8,14 +8,14 @@ import * as Facts from "./facts.ts"
 import * as Index from "./index-store.ts"
 import * as PullRequests from "./pull-requests.ts"
 
-const decodeFacts = Schema.decodeUnknownEffect(Schema.Array(SessionFact))
+const decodeFacts = Schema.decodeEffect(Schema.Array(SessionFact))
 
 /** The hub's interface to the gateway and to the Worker's routes. */
 export class Hub extends WorkerEntrypoint<Env> {
   /** Applies facts in order, and returns the task of each main session the facts opened. */
-  async sessionFacts(facts: ReadonlyArray<unknown>): Promise<ReadonlyArray<Binding>> {
+  async sessionFacts(facts: ReadonlyArray<typeof SessionFact.Encoded>): Promise<ReadonlyArray<Binding>> {
     const app = await runtime(this.env)
-    const db = this.env.INDEX
+    const db = Index.d1(this.env.INDEX)
 
     return app.runPromise(
       Effect.gen(function* () {
@@ -33,16 +33,18 @@ export class Hub extends WorkerEntrypoint<Env> {
   #wake = (session: string, text: string) => Effect.tryPromise(() => this.env.GATEWAY.wake(session, text))
 
   /** Applies an observation of a pull request, then delivers the wake-ups it queued. */
-  async pullRequestFacts(facts: unknown): Promise<{ readonly changes: ReadonlyArray<string>; readonly woke: number }> {
+  async pullRequestFacts(
+    facts: typeof PullRequestFacts.Encoded,
+  ): Promise<{ readonly changes: ReadonlyArray<string>; readonly woke: number }> {
     const app = await runtime(this.env)
-    const db = this.env.INDEX
+    const db = Index.d1(this.env.INDEX)
     const mayWake = this.#mayWake
     const wake = this.#wake
 
     return app.runPromise(
       Effect.gen(function* () {
         yield* Index.migrate(db)
-        const decoded = yield* Schema.decodeUnknownEffect(PullRequestFacts)(facts)
+        const decoded = yield* Schema.decodeEffect(PullRequestFacts)(facts)
         const observed = yield* PullRequests.observe(db, decoded, mayWake)
         let woke = 0
 
@@ -56,7 +58,7 @@ export class Hub extends WorkerEntrypoint<Env> {
   /** Tries again to deliver every wake-up that has not reached its session. */
   async deliverWakes(): Promise<number> {
     const app = await runtime(this.env)
-    const db = this.env.INDEX
+    const db = Index.d1(this.env.INDEX)
     const wake = this.#wake
 
     return app.runPromise(
@@ -73,7 +75,7 @@ export class Hub extends WorkerEntrypoint<Env> {
 
   /** The pull requests worth reading again: someone follows them and they are not merged or closed. */
   async watchedPullRequests(): Promise<ReadonlyArray<PullRequestRef>> {
-    const db = this.env.INDEX
+    const db = Index.d1(this.env.INDEX)
     const rows = await Effect.runPromise(Effect.andThen(Index.migrate(db), Index.pullRequests(db, true)))
 
     return rows.flatMap((row) => {
@@ -84,13 +86,13 @@ export class Hub extends WorkerEntrypoint<Env> {
   }
 
   async pullRequests(): Promise<ReadonlyArray<Index.PullRequestRow>> {
-    const db = this.env.INDEX
+    const db = Index.d1(this.env.INDEX)
 
     return Effect.runPromise(Effect.andThen(Index.migrate(db), Index.pullRequests(db, false)))
   }
 
   async tree(): Promise<ReadonlyArray<Index.TaskNode>> {
-    const db = this.env.INDEX
+    const db = Index.d1(this.env.INDEX)
 
     return Effect.runPromise(Effect.andThen(Index.migrate(db), Index.tree(db)))
   }

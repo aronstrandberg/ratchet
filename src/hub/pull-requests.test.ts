@@ -3,18 +3,14 @@ import { Effect, Layer } from "effect"
 import { TestRunner } from "effect/cluster"
 import { EntityMachine } from "effect-machine/cluster"
 import type { Check, PullRequestFacts } from "../protocol/pull-request.ts"
+import { SessionFact, SessionOrigin } from "../protocol/session.ts"
 import * as Commands from "./commands.ts"
 import * as Facts from "./facts.ts"
 import { PullRequestEntity, pullRequestMachine } from "./pull-request.ts"
 import * as PullRequests from "./pull-requests.ts"
 import { SessionEntity, sessionMachine } from "./session.ts"
 import { TaskEntity, taskMachine } from "./task.ts"
-
-/** An index that accepts every write, for tests that only read the cells. */
-const noIndex = {
-  exec: async () => ({}),
-  prepare: () => ({ bind: () => ({ run: async () => ({}) }) }),
-} as unknown as D1Database
+import { noIndex } from "./testing.ts"
 
 const cells = Layer.mergeAll(
   EntityMachine.layer(TaskEntity, taskMachine),
@@ -46,15 +42,17 @@ const facts = (over: Partial<PullRequestFacts> = {}): PullRequestFacts => ({
 const check = (name: string, state: Check["state"]): Check => ({ name, state, required: true })
 
 const open = (session: string) =>
-  Facts.apply(noIndex, {
-    _tag: "Opened",
-    session,
-    title: session,
-    origin: { _tag: "Root" },
-    running: false,
-    subagents: [],
-    questions: [],
-  })
+  Facts.apply(
+    noIndex,
+    SessionFact.cases.Opened.make({
+      session,
+      title: session,
+      origin: SessionOrigin.cases.Root.make({}),
+      running: false,
+      subagents: [],
+      questions: [],
+    }),
+  )
 
 const everyone = () => true
 

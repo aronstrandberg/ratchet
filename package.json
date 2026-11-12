@@ -6,11 +6,11 @@
     "dev": "CELLD_ESBUILD=$PWD/node_modules/@esbuild/linux-x64/bin/esbuild celld dev . --port 9876",
     "typecheck": "tsc --noEmit",
     "test": "bun test",
-    "lint": "oxlint",
-    "lint:fix": "oxlint --fix",
+    "lint": "oxlint --deny-warnings",
+    "lint:fix": "oxlint --deny-warnings --fix",
     "fmt": "rumdl fmt .",
     "fmt:check": "rumdl check .",
-    "check": "oxlint && rumdl check . && tsc --noEmit && bun test"
+    "check": "oxlint --deny-warnings && rumdl check . && tsc --noEmit && bun test"
   },
   "devDependencies": {
     "@cloudflare/workers-types": "^5.20261112.1",

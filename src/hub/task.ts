@@ -53,6 +53,11 @@ export const TaskState = State({
 
 export type TaskState = typeof TaskState.Type
 
+/** A task that exists, in any of its board states. */
+export type LiveTask = Exclude<TaskState, { _tag: "Unborn" }>
+
+export const isUnborn = TaskState.$is("Unborn")
+
 export const TaskEvent = Event({
   Created: {
     title: Schema.String,
