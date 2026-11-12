@@ -9,6 +9,16 @@ and pull requests as `effect-machine` machines, one cell each. `src/gateway`
 holds every connection to the outside: OpenCode and GitHub. `src/protocol` holds
 what the two say to each other.
 
+The words this repository uses are in [GLOSSARY.md](GLOSSARY.md). Use them in
+code, comments and messages.
+
+## Stored state
+
+A cell stores its state and its events as JSON. A field you add to a state or an
+event needs a decoding default (`Schema.withDecodingDefaultKey`), or cells
+stored before the change no longer load. Add the stored shape to
+`src/hub/stored-state.test.ts`.
+
 ## Skills
 
 The skills in `.agents/skills` are the standards for this repository. Load them
