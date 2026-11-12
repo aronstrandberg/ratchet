@@ -1,0 +1,3 @@
+#!/bin/sh
+# Lint, Markdown, types and tests. Enable with: git config core.hooksPath .githooks
+exec bun run check

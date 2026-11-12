@@ -26,3 +26,20 @@ bun run dev           # celld dev on http://127.0.0.1:9876
 | `GET /tree` | Returns the task forest |
 
 State lives in `.celld/dev`. `celld dev . --clean` starts from nothing.
+
+## Checks
+
+`bun run check` runs everything a commit must pass:
+
+| Command | Does |
+| --- | --- |
+| `bun run lint` | oxlint with the [anti-slop](https://github.com/dmmulroy/anti-slop) rules, vendored in `tools/oxlint/anti-slop`. `bun run lint:fix` adds the blank lines it asks for |
+| `bun run fmt:check` | [rumdl](https://github.com/rvben/rumdl) on the Markdown. `bun run fmt` rewrites it |
+| `bun run typecheck` | `tsc` |
+| `bun test` | The tests |
+
+A pre-commit hook runs it. Turn the hook on once per clone:
+
+```sh
+git config core.hooksPath .githooks
+```
