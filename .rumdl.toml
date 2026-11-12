@@ -1,6 +1,8 @@
 [global]
 line-length = 80
 exclude = ["tools/oxlint/anti-slop/**"]
+# Keep the exclusion when a hook passes file names.
+force-exclude = true
 
 [MD013]
 reflow = true

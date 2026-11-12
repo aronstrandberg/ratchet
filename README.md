@@ -38,8 +38,6 @@ State lives in `.celld/dev`. `celld dev . --clean` starts from nothing.
 | `bun run typecheck` | `tsc` |
 | `bun test` | The tests |
 
-A pre-commit hook runs it. Turn the hook on once per clone:
-
-```sh
-git config core.hooksPath .githooks
-```
+[lefthook](https://lefthook.dev) runs these before each commit, from
+`lefthook.yml`. It lints and formats the staged files and stages what it fixed.
+`bun install` installs the hook.

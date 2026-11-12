@@ -1,0 +1,19 @@
+# Git hooks. `bun install` installs them through the `prepare` script.
+pre-commit:
+  parallel: true
+  jobs:
+    - name: lint
+      glob: "*.{ts,js,mjs}"
+      run: node_modules/.bin/oxlint --deny-warnings --no-error-on-unmatched-pattern --fix {staged_files}
+      stage_fixed: true
+
+    - name: markdown
+      glob: "*.md"
+      run: node_modules/.bin/rumdl fmt {staged_files}
+      stage_fixed: true
+
+    - name: typecheck
+      run: bun run typecheck
+
+    - name: test
+      run: bun test
