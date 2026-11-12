@@ -17,7 +17,9 @@ backlog) is in `agent-setup/README.md` in `dotfiles-lovable`.
 | Where it runs | Local on the dev VM. Nothing on shared Lovable infra for now |
 | Language | TypeScript with Effect v4. Every record is a tagged union |
 | Logic | State machines with `effect-machine` |
-| Unit of work | A task. Tasks form a tree. A task has one or more sessions, and forking a session forks the task by default |
+| Unit of work | A task. Tasks form a tree. Tasks and sessions are many to many, a session works on one task at a time, and forking a session forks the task by default |
+| Runtime mode | `celld dev`, with its local store |
+| GitHub credential | A fine-grained token to start |
 | External systems | Reached only as APIs, in and out of the gateway worker, OpenCode included. No `gh`, `lov` or other local CLI. The hub worker does no outbound I/O |
 | Telemetry | OpenTelemetry traces for everything, OpenCode's included, through a collector that is local and ours alone, stored in a local ClickHouse |
 | How we build | One thing, iterated. No separate spikes |
@@ -79,7 +81,7 @@ session or task ID from the model.
 | Field | Type | Rule |
 | --- | --- | --- |
 | Parent | Task, or none for a root | One parent. The tree has no cycles |
-| Sessions | Zero or more OpenCode sessions | A session belongs to exactly one task. A task without a session is a group, such as a project |
+| Sessions | Zero or more OpenCode sessions | A session can work on several tasks over its life, on one at a time. A task without a session is a group, such as a project |
 | Linear | Project, issue, or none | One to one. A Linear entity belongs to at most one task |
 | Attachments | Set of resource and relation | Relation is `Owns`, `WaitsOn` or `Context` |
 | State | `Planned`, `Active`, `Waiting(on me, a resource or a task)`, `Done`, `Archived` | One machine per task |
@@ -103,11 +105,26 @@ fork the hub makes through the API produce the same event and the same
 result. The hub writes the task ID into the session's metadata, so the
 mapping is stored on both sides.
 
-**Several sessions.** A task can hold more than one session: a fork I move
-back into its parent's task, or a fresh session that continues the work.
-Compaction keeps the same session, so it changes nothing here. Attachments
-belong to the task. A wake-up goes to the session that asked for it. A task
-is `Active` while any of its sessions runs.
+**Current task.** A session has one current task. What it does is recorded
+against that task: a PR it registers, a decision it raises, a resource it
+attaches. When a session starts on something else, its current task changes
+and the hub records the span of messages each task covered. So a session
+that did three things holds three tasks, and each task knows which part of
+the session was its own.
+
+**Toward one task per session.** A session holding several tasks is the case
+to shrink. When a session's current task changes, the orchestrator can fork
+the session at that message, so the new task continues in a session of its
+own. A wake-up names the task it belongs to. When it arrives for a task
+that is not the session's current one, that is a second point to fork.
+
+**Correcting a link.** The automatic links are sometimes wrong: a fork made
+to try another approach to the same task gets a new task by default, or a
+session is filed under the wrong project. Changing a session's current task,
+or which task a span belongs to, fixes that.
+
+Compaction keeps the same session and changes nothing here. A task is
+`Active` while a session has it as current task and is running.
 
 **Linear.** A project maps to a group task, an issue to a task, a sub-issue
 to a child task. A fork starts with no Linear entity. Creating one stays a
@@ -134,6 +151,40 @@ task to the resource's changes.
 Uniqueness needs no lock: the resource cell handles one message at a time, so
 it refuses a second owner itself.
 
+## From GitHub frames to wake-ups
+
+One push to a PR in the monorepo produces about a hundred frames: each of
+some 46 checks starts and finishes, bots post and edit comments, and the
+session's own replies appear under my login. A wake-up costs a model turn, so
+most of this must not wake anything. Three layers reduce it, and none is a
+free-form filter.
+
+| Layer | Turns | Into | How |
+| --- | --- | --- | --- |
+| GitHub adapter | Frames | Facts: a snapshot of head, checks, reviews and threads | A read after a frame, with a short debounce. No judgement. A frame for a passed check needs no read |
+| PR resource cell | Fact snapshots | Typed changes | A state machine. CI per head goes `Running`, `Failing`, `Finished`, so it emits at most two changes per head: the first failure and the end |
+| Subscription | Changes | Wake-ups | By relation. `Owns` gets every actionable change, `WaitsOn` gets merged and closed, `Context` gets none |
+
+| Change | Wakes an owner | Note |
+| --- | --- | --- |
+| First required check fails on a head | Yes | Later failures on the same head wait for the end |
+| CI ends on a head | Yes | With the checks that failed, or passed after failing |
+| A person submits a review or opens a thread | Yes | |
+| A bot opens a thread with a finding | Yes | |
+| A thread is resolved | No | Sent with the next wake-up |
+| Bot boilerplate, an edited bot summary, a comment a newer one replaced | No | Sent with the next wake-up, or dropped |
+| The session's own reply | No | Posted under my login, recognised by its footer |
+| My own comment | Yes | It is how I steer a session from GitHub |
+| Merge conflict, removed from the merge queue | Yes | |
+| Merged or closed | Yes | Also wakes tasks that wait on it |
+
+The CI rows are mechanical and cover most frames. The comment rows are
+heuristics about authors and text. `lov pr watch` has tuned such rules in Go
+(`go/cli/internal/commands/pr` in the monorepo), which can't be imported
+here. Start with the CI machine and a short list of bot authors, measure
+wake-ups per PR from the traces, and add a comment rule when the traces show
+its noise.
+
 ## Cells
 
 | Cell | One per | Machine | Wakes on |
@@ -151,7 +202,7 @@ orchestrator query it. No query fans out over cells.
 | System | In | Out | Credential |
 | --- | --- | --- | --- |
 | OpenCode | Event stream | HTTP API on loopback: wake a session, fork, set metadata | The local service's credential |
-| GitHub | Webhook proxy stream | REST and GraphQL | A GitHub token, kind not chosen |
+| GitHub | Webhook proxy stream | REST and GraphQL | A fine-grained token |
 | Webhook proxy | Its stream | OAuth at `lovable.dev/oauth`, then `watch_events` or the direct stream URL | One OAuth grant with a refresh token |
 | Linear | Polling | GraphQL | OAuth or an API key |
 | Slack, incident.io | Polling | Their MCP servers over HTTP | OAuth |
@@ -193,9 +244,8 @@ run for a while.
   `ask` and `watch`, and journals each event.
 - The same package has a persisted queue and a workflow engine on Durable
   Objects, for the outbox and for timers.
-- A real celld node needs a cloud bucket. `celld dev` keeps state in a local
-  store and is the only fully local mode besides a node against MinIO, which
-  celld calls unqualified for production.
+- Ratchet runs under `celld dev`, which keeps state in a local store. A real
+  celld node needs a cloud bucket.
 - A lone node waits for its store on every write.
 - celld v0.6.2 is beta. Some upgrades need the node stopped.
 - `@opencode/plugin` pins `effect` 4.1.0 and the cells need 4.1.4 or later.
@@ -227,11 +277,9 @@ iteration adds the GitHub adapter.
 
 ## Open
 
-1. A forked task is a child of the original, following OpenCode's
-   `parentID`. The other reading is that the original splits into two
-   children.
-2. How a session moves to another task: a tool, a panel action, or both.
-3. `celld dev` as the runtime, or a node against MinIO.
-4. The GitHub credential: a fine-grained token, or an OAuth app with a
-   device flow.
-5. How the GitHub adapter folds noise. `lov pr watch` does it in Go.
+1. How a session's current task changes: the session declares it with a
+   tool, the orchestrator detects it, or I do it in the panel.
+2. Whether the orchestrator forks on its own when a session picks up a second
+   task, or proposes the fork to me.
+3. Whether a fine-grained token can read everything the adapter needs on
+   `lovablelabs/lovable`: checks, review threads and the merge queue.
