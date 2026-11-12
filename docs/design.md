@@ -304,6 +304,8 @@ iteration adds the GitHub adapter.
 | Session tree | A task per root session, a child task per fork |
 | Session metadata | The gateway writes `ratchet.task` into each session's metadata, once, least recently updated first |
 | Index | D1 table written after each task change. `GET /tree` returns the forest |
+| Session tools | The hub serves MCP at `/mcp` with Effect's `McpServer`, request-scoped, over the 2026-07-28 protocol: `task_current`, `task_start`, `task_fork`, `subagent_declare`. A tool takes the calling session from the request metadata OpenCode sends |
+| GitHub read | `src/gateway/github.ts` reads a pull request in one GraphQL call. `src/hub/pull-request.ts` turns two observations into typed changes, with CI reporting at most its first failure and its end per head. Not wired to tasks yet |
 | Tracing | Spans over OTLP to the local collector when `OTLP_URL` is set. The collector and ClickHouse are user services in `dotfiles-lovable/nix/ratchet.nix` |
 
 Differences from the design above, found while building:
@@ -314,8 +316,11 @@ Differences from the design above, found while building:
 - A trace does not cross cells yet. Spans inside an entity's Durable Object
   start a new trace, and so does the hub when the gateway calls it. The trace
   context has to be passed along by hand.
-- A subagent's kind is always `working`. The tool a session declares it with
-  needs the hub's MCP endpoint, which is not built.
+- A fork starts in the directory of the session it came from. The tool's
+  instructions tell the caller to have the fork make its own worktree.
+- A session that changes task does not record which messages belonged to
+  which task. OpenCode sends the session ID with a tool call, not the message.
+- Archived and deleted sessions are not handled. Their tasks stay.
 - The index is written by the code that applies a fact, after the cell
   answers. A failed write leaves a stale row until the task changes again.
 - A snapshot of 146 sessions takes about 40 seconds on a clean start, because
