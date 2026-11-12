@@ -3,10 +3,13 @@
 A tree of tasks, each tied to its OpenCode sessions, with every external
 resource a task touches attached to it. Tasks and resources are cells: typed
 actors with a state machine, a durable inbox and an outbox. Ratchet wakes the
-session or person who acts next. This is a design. Nothing is built.
+session or person who acts next.
 
 The wider plan it belongs to (the coordinator session, the Desktop panel, the
 backlog) is in `agent-setup/README.md` in `dotfiles-lovable`.
+
+The first iteration runs: the session tree is mirrored into tasks. See
+[Built so far](#built-so-far).
 
 ## Decided
 
@@ -97,8 +100,9 @@ flowchart TD
   C --> E
 ```
 
-**Fork.** OpenCode's fork creates a child session from the history before a
-message, and the session records its `parentID` and fork point. By default
+**Fork.** OpenCode's fork copies a session's history up to a message into a
+new session, which records the session it came from and the fork point in its
+`fork` field. By default
 the task forks with it: the forked session gets a new task, a child of the
 task that owns the original session. A fork I make in the desktop app and a
 fork the hub makes through the API produce the same event and the same
@@ -113,9 +117,11 @@ that did three things holds three tasks, and each task knows which part of
 the session was its own.
 
 **Toward one task per session.** A session holding several tasks is the case
-to shrink. When a session's current task changes, the orchestrator can fork
-the session at that message, so the new task continues in a session of its
-own. A wake-up names the task it belongs to. When it arrives for a task
+to shrink. A session changes its current task with a tool. It also has a tool
+to fork, and instructions to fork when a significant task can be done
+separately. The orchestrator forks too, on its own: when a session's current
+task changes, it can fork the session at that message, so the new task
+continues in a session of its own. A wake-up names the task it belongs to. When it arrives for a task
 that is not the session's current one, that is a second point to fork.
 
 **Correcting a link.** The automatic links are sometimes wrong: a fork made
@@ -130,8 +136,8 @@ Compaction keeps the same session and changes nothing here. A task is
 to a child task. A fork starts with no Linear entity. Creating one stays a
 proposal, as decided for all new issues.
 
-**Subagent sessions** also have a `parentID`, with no fork point. They join
-their parent's task and never start one.
+**Subagent sessions** are the ones with a `parentID`. They join their
+parent's task and never start one.
 
 ## Resources
 
@@ -275,11 +281,37 @@ the binding between them, the cluster classes, `effect-machine`, an outbound
 stream, OpenCode's API and telemetry, and no other provider. The second
 iteration adds the GitHub adapter.
 
+## Built so far
+
+| Piece | State |
+| --- | --- |
+| Task and session cells | Each is an `effect-machine` machine run as an Effect Cluster entity, one Durable Object each, under `celld dev` |
+| Cell persistence | `src/hub/persistence.ts` keeps each machine's journal in its own object's SQLite. State survives a restart |
+| Gateway OpenCode adapter | One Durable Object holds the event stream, subscribed to session lifecycle events only. An alarm reconnects it after a restart. Each connect starts with a snapshot of all sessions |
+| Session tree | A task per root session, a child task per fork. `Active` while a session of the task runs |
+| Index | D1 table written after each task change. `GET /tree` returns the forest |
+
+Differences from the design above, found while building:
+
+- `celld dev` runs one script. The hub and the gateway are two entrypoints
+  of that script, bound to each other with service bindings. They become two
+  deployments on a real celld node.
+- Subagent sessions are left out of the snapshot. They don't join their
+  parent's task yet.
+- The index is written by the code that applies a fact, after the cell
+  answers. A failed write leaves a stale row until the task changes again.
+- A machine's journal is replayed in full on each wake. Nothing writes a
+  snapshot yet, so replay time grows with a task's age.
+- A snapshot of 146 sessions takes about 40 seconds on first run, because
+  each cell write waits for the local store.
+- Setting session metadata changes the session's `updated` time. Writing the
+  task ID into metadata is not built, because it may reorder the session list.
+- OpenCode's port changes when its service restarts. `scripts/dev-vars.sh`
+  rewrites `.dev.vars` from the service's registration file.
+
 ## Open
 
-1. How a session's current task changes: the session declares it with a
-   tool, the orchestrator detects it, or I do it in the panel.
-2. Whether the orchestrator forks on its own when a session picks up a second
-   task, or proposes the fork to me.
-3. Whether a fine-grained token can read everything the adapter needs on
+1. Whether to write the task ID into session metadata, given that it changes
+   the session's `updated` time.
+2. Whether a fine-grained token can read everything the adapter needs on
    `lovablelabs/lovable`: checks, review threads and the merge queue.

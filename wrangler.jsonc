@@ -8,13 +8,21 @@
       { "name": "CLUSTER_ENTITY", "class_name": "ClusterEntity" },
       { "name": "CLUSTER_WORKFLOW", "class_name": "ClusterWorkflow" },
       { "name": "CLUSTER_QUEUE", "class_name": "ClusterDurableQueue" },
-      { "name": "CLUSTER_SINGLETON", "class_name": "ClusterSingleton" }
+      { "name": "CLUSTER_SINGLETON", "class_name": "ClusterSingleton" },
+      { "name": "OPENCODE_STREAM", "class_name": "OpenCodeStream" }
     ]
   },
   "migrations": [
     {
       "tag": "v1",
       "new_sqlite_classes": ["ClusterEntity", "ClusterWorkflow", "ClusterDurableQueue", "ClusterSingleton"]
-    }
-  ]
+    },
+    { "tag": "v2", "new_sqlite_classes": ["OpenCodeStream"] }
+  ],
+  // celld dev runs one script, so the hub and the gateway are two entrypoints of it.
+  "services": [
+    { "binding": "HUB", "service": "ratchet", "entrypoint": "Hub" },
+    { "binding": "GATEWAY", "service": "ratchet", "entrypoint": "Gateway" }
+  ],
+  "d1_databases": [{ "binding": "INDEX", "database_name": "ratchet-index", "database_id": "ratchet-index" }]
 }

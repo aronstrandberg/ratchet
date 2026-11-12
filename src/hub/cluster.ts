@@ -3,16 +3,25 @@ import { Layer, ManagedRuntime } from "effect"
 import { EntityMachine } from "effect-machine/cluster"
 import type { Env } from "../env.ts"
 import * as Persistence from "./persistence.ts"
+import { SessionEntity, sessionMachine } from "./session.ts"
 import { TaskEntity, taskMachine } from "./task.ts"
 
-const TaskLayer = EntityMachine.layer(TaskEntity, taskMachine, { persistence: { strategy: "journal" } })
+const journal = { persistence: { strategy: "journal" } } as const
 
 const layer = (env: Env) =>
-  TaskLayer.pipe(
-    Layer.provide(Persistence.layerSqlite({ Task: { state: taskMachine.stateSchema, event: taskMachine.eventSchema } })),
+  Layer.mergeAll(
+    EntityMachine.layer(TaskEntity, taskMachine, journal),
+    EntityMachine.layer(SessionEntity, sessionMachine, journal),
+  ).pipe(
+    Layer.provide(
+      Persistence.layerSqlite({
+        Task: { state: taskMachine.stateSchema, event: taskMachine.eventSchema },
+        Session: { state: sessionMachine.stateSchema, event: sessionMachine.eventSchema },
+      }),
+    ),
     Layer.provideMerge(
       CloudflareCluster.layer({
-        entities: [TaskEntity],
+        entities: [TaskEntity, SessionEntity],
         entityNamespace: env.CLUSTER_ENTITY,
         workflowNamespace: env.CLUSTER_WORKFLOW,
         queueNamespace: env.CLUSTER_QUEUE,
