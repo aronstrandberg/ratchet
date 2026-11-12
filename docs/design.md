@@ -87,7 +87,7 @@ session or task ID from the model.
 | Sessions | Zero or more OpenCode sessions | A session can work on several tasks over its life, on one at a time. A task without a session is a group, such as a project |
 | Linear | Project, issue, or none | One to one. A Linear entity belongs to at most one task |
 | Attachments | Set of resource and relation | Relation is `Owns`, `WaitsOn` or `Context` |
-| State | `Planned`, `Active`, `Waiting(on me, a resource or a task)`, `Done`, `Archived` | One machine per task |
+| State | `NeedsMe`, `Working`, `Watching`, `Idle`, later `Done` and `Archived` | One machine per task. The tag is what the board shows |
 
 ```mermaid
 flowchart TD
@@ -129,15 +129,27 @@ to try another approach to the same task gets a new task by default, or a
 session is filed under the wrong project. Changing a session's current task,
 or which task a span belongs to, fixes that.
 
-Compaction keeps the same session and changes nothing here. A task is
-`Active` while a session has it as current task and is running.
+Compaction keeps the same session and changes nothing here.
 
 **Linear.** A project maps to a group task, an issue to a task, a sub-issue
 to a child task. A fork starts with no Linear entity. Creating one stays a
 proposal, as decided for all new issues.
 
-**Subagent sessions** are the ones with a `parentID`. They join their
-parent's task and never start one.
+**Subagent sessions** are the ones with a `parentID`. They never start a
+task. A running subagent is recorded on the task of the main session it
+works for, however deep it nests, with a kind: `working`, or `watching` for
+one that monitors something and does no work on the task. The hub sees a
+subagent start and stop. Only the owning session knows what it is for, so the
+session declares the kind with a tool. Long implementation work is meant to
+happen in main sessions that the orchestrator manages, so subagents get this
+lighter record and no task of their own.
+
+**What the state says.** The tag is derived from the task's details, in this
+order: an open question form or permission request makes it `NeedsMe`, a
+running main session or a working subagent makes it `Working`, a subagent
+that only watches makes it `Watching`, and otherwise it is `Idle`. A
+question wins over running work, so a task whose subagent runs while the main
+agent waits on me reads `NeedsMe`.
 
 ## Resources
 
@@ -286,32 +298,34 @@ iteration adds the GitHub adapter.
 | Piece | State |
 | --- | --- |
 | Task and session cells | Each is an `effect-machine` machine run as an Effect Cluster entity, one Durable Object each, under `celld dev` |
-| Cell persistence | `src/hub/persistence.ts` keeps each machine's journal in its own object's SQLite. State survives a restart |
-| Gateway OpenCode adapter | One Durable Object holds the event stream, subscribed to session lifecycle events only. An alarm reconnects it after a restart. Each connect starts with a snapshot of all sessions |
-| Session tree | A task per root session, a child task per fork. `Active` while a session of the task runs |
+| Task state | `NeedsMe`, `Working`, `Watching` or `Idle`, from running sessions, running subagents, and open forms and permission requests |
+| Cell persistence | `src/hub/persistence.ts` keeps each machine's journal in its own object's SQLite, and folds it into a snapshot past 50 events on a wake or 200 on an append |
+| Gateway OpenCode adapter | One Durable Object holds the event stream, subscribed to lifecycle, form and permission events only. An alarm reconnects it after a restart. Each connect starts with a snapshot of all sessions |
+| Session tree | A task per root session, a child task per fork |
+| Session metadata | The gateway writes `ratchet.task` into each session's metadata, once, least recently updated first |
 | Index | D1 table written after each task change. `GET /tree` returns the forest |
+| Tracing | Spans over OTLP to the local collector when `OTLP_URL` is set. The collector and ClickHouse are user services in `dotfiles-lovable/nix/ratchet.nix` |
 
 Differences from the design above, found while building:
 
 - `celld dev` runs one script. The hub and the gateway are two entrypoints
   of that script, bound to each other with service bindings. They become two
   deployments on a real celld node.
-- Subagent sessions are left out of the snapshot. They don't join their
-  parent's task yet.
+- A trace does not cross cells yet. Spans inside an entity's Durable Object
+  start a new trace, and so does the hub when the gateway calls it. The trace
+  context has to be passed along by hand.
+- A subagent's kind is always `working`. The tool a session declares it with
+  needs the hub's MCP endpoint, which is not built.
 - The index is written by the code that applies a fact, after the cell
   answers. A failed write leaves a stale row until the task changes again.
-- A machine's journal is replayed in full on each wake. Nothing writes a
-  snapshot yet, so replay time grows with a task's age.
-- A snapshot of 146 sessions takes about 40 seconds on first run, because
-  each cell write waits for the local store.
-- Setting session metadata changes the session's `updated` time. Writing the
-  task ID into metadata is not built, because it may reorder the session list.
+- A snapshot of 146 sessions takes about 40 seconds on a clean start, because
+  each cell write waits for the local store. Later snapshots send only what
+  changed.
 - OpenCode's port changes when its service restarts. `scripts/dev-vars.sh`
-  rewrites `.dev.vars` from the service's registration file.
+  rewrites `.dev.vars` from the service's registration file, and a systemd
+  path unit runs it when that file changes.
 
 ## Open
 
-1. Whether to write the task ID into session metadata, given that it changes
-   the session's `updated` time.
-2. Whether a fine-grained token can read everything the adapter needs on
+1. Whether a fine-grained token can read everything the adapter needs on
    `lovablelabs/lovable`: checks, review threads and the merge queue.
