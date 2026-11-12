@@ -4,6 +4,7 @@ import { TestRunner } from "effect/cluster"
 import { EntityMachine } from "effect-machine/cluster"
 import type { Check, PullRequestFacts } from "../protocol/pull-request.ts"
 import { SessionFact, SessionOrigin } from "../protocol/session.ts"
+import type { Wake } from "../protocol/wake.ts"
 import * as Commands from "./commands.ts"
 import * as Facts from "./facts.ts"
 import { PullRequestEntity, pullRequestMachine } from "./pull-request.ts"
@@ -67,7 +68,7 @@ test("a failed delivery keeps the wake-up, and the next delivery sends it once",
 
       const sent: Array<string> = []
       const down = () => Effect.fail("OpenCode is down")
-      const up = (session: string, text: string) => Effect.sync(() => void sent.push(`${session}: ${text}`))
+      const up = (wake: Wake) => Effect.sync(() => void sent.push(`${wake.session}: ${wake.text}`))
       expect(yield* PullRequests.deliver(noIndex, task, down)).toBe(0)
       expect(yield* PullRequests.deliver(noIndex, task, up)).toBe(1)
       expect(yield* PullRequests.deliver(noIndex, task, up)).toBe(0)
@@ -160,7 +161,7 @@ test("a wake-up for an earlier task says the session now works on another one", 
       yield* PullRequests.observe(noIndex, facts({ state: "merged" }), everyone)
 
       const sent: Array<string> = []
-      yield* PullRequests.deliver(noIndex, task, (_session, text) => Effect.sync(() => void sent.push(text)))
+      yield* PullRequests.deliver(noIndex, task, (wake) => Effect.sync(() => void sent.push(wake.text)))
       expect(sent[0]).toContain('It belongs to "ses_later", a task you worked on before the one you work on now.')
     }),
   ))

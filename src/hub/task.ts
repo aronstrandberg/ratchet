@@ -3,6 +3,7 @@ import { Event, Machine, State } from "effect-machine"
 import { toEntity } from "effect-machine/cluster"
 import { Outcome, Relation, WorkStatus } from "../protocol/pull-request.ts"
 import { Question } from "../protocol/session.ts"
+import { Wake } from "../protocol/wake.ts"
 
 /** A running subagent. `watching` marks one that monitors something and does no work on the task. */
 const Subagent = Schema.Struct({
@@ -27,9 +28,6 @@ const Attachment = Schema.Struct({
   ended: Schema.NullOr(Outcome).pipe(Schema.withDecodingDefaultKey(Effect.succeed(null))),
 })
 
-/** A message for one of the task's sessions that has not reached it yet. */
-const Wake = Schema.Struct({ id: Schema.String, session: Schema.String, text: Schema.String })
-
 const details = {
   title: Schema.String,
   parent: Schema.NullOr(Schema.String),
@@ -39,6 +37,7 @@ const details = {
   subagents: Schema.Array(Subagent),
   questions: Schema.Array(OpenQuestion),
   attachments: Schema.Array(Attachment),
+  /** Messages for the task's sessions that have not reached them yet. */
   outbox: Schema.Array(Wake),
 }
 
@@ -90,7 +89,13 @@ export const TaskEvent = Event({
   /** The attaching session says where its work on a resource stands. */
   StatusSet: { resource: Schema.String, status: WorkStatus, note: Schema.String },
   ResourceEnded: { resource: Schema.String, outcome: Outcome },
-  WakeQueued: { id: Schema.String, session: Schema.String, text: Schema.String },
+  WakeQueued: {
+    id: Schema.String,
+    session: Schema.String,
+    text: Schema.String,
+    /** When it was queued, in milliseconds since the epoch. */
+    at: Schema.Number.pipe(Schema.withDecodingDefaultKey(Effect.succeed(0))),
+  },
   WakeDelivered: { id: Schema.String },
 })
 
@@ -238,7 +243,10 @@ export const taskMachine = Machine.make({
   .on(open, TaskEvent.WakeQueued, ({ state, event }) =>
     settle({
       ...detailsOf(state),
-      outbox: [...without(state.outbox, (w) => w.id === event.id), { id: event.id, session: event.session, text: event.text }],
+      outbox: [
+        ...without(state.outbox, (w) => w.id === event.id),
+        { id: event.id, session: event.session, text: event.text, queuedAt: event.at },
+      ],
     }),
   )
   .on(open, TaskEvent.WakeDelivered, ({ state, event }) =>

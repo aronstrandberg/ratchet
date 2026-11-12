@@ -23,3 +23,15 @@ test("a task stored before a followed resource could end still loads, with the r
 
   expect(isUnborn(state) ? [] : state.attachments.map((attachment) => attachment.ended)).toEqual([null])
 })
+
+const storedTaskEvent = Schema.decodeUnknownSync(Schema.fromJsonString(Schema.toCodecJson(taskMachine.eventSchema)))
+
+test("a wake-up queued before wake-ups carried their time still loads, from a snapshot and from the journal", () => {
+  const state = storedTask(
+    '{"_tag":"Idle","title":"t","parent":null,"sessions":["ses_1"],"running":[],"subagents":[],"questions":[],' +
+      '"attachments":[],"outbox":[{"id":"w1","session":"ses_1","text":"It merged."}]}',
+  )
+
+  expect(isUnborn(state) ? [] : state.outbox.map((wake) => wake.queuedAt)).toEqual([0])
+  expect(storedTaskEvent('{"_tag":"WakeQueued","id":"w1","session":"ses_1","text":"It merged."}')).toMatchObject({ at: 0 })
+})

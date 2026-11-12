@@ -2,6 +2,7 @@ import { WorkerEntrypoint } from "cloudflare:workers"
 import { Effect } from "effect"
 import type { Env } from "../env.ts"
 import type { PullRequestRef } from "../protocol/pull-request.ts"
+import type { Wake } from "../protocol/wake.ts"
 import * as GitHub from "./github.ts"
 import type { PollerStatus } from "./github-poller.ts"
 import * as OpenCode from "./opencode.ts"
@@ -34,9 +35,9 @@ export class Gateway extends WorkerEntrypoint<Env> {
     return this.env.GITHUB_POLLER.getByName("default").ensure()
   }
 
-  /** Puts a message into a session and lets it run. */
-  async wake(session: string, text: string): Promise<void> {
-    await Effect.runPromise(OpenCode.wake(this.#opencode, session, text))
+  /** Puts a wake-up into its session and lets the session run. Sending the same wake-up again adds nothing. */
+  async wake(wake: Wake): Promise<void> {
+    await Effect.runPromise(OpenCode.wake(this.#opencode, wake))
   }
 
   /** Forks a session, names the fork and prompts it. Returns the fork's session ID. */

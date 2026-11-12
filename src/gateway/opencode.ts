@@ -2,6 +2,7 @@ import { Effect, Option, Schema, Stream } from "effect"
 import { Sse } from "effect/encoding"
 import { FetchHttpClient, HttpClient, HttpClientRequest, HttpClientResponse } from "effect/http"
 import { type Question, SessionFact, SessionOrigin } from "../protocol/session.ts"
+import type { Wake } from "../protocol/wake.ts"
 
 export interface Config {
   readonly url: string
@@ -67,15 +68,17 @@ const ServerEvent = Schema.Struct({
   }),
 })
 
-const client = (config: Config) =>
+/** A client for the OpenCode service that passes every response on, whatever its status. */
+const anyStatusClient = (config: Config) =>
   Effect.map(HttpClient.HttpClient, (http) =>
     http.pipe(
       HttpClient.mapRequest((request) =>
         request.pipe(HttpClientRequest.prependUrl(config.url), HttpClientRequest.basicAuth("opencode", config.password)),
       ),
-      HttpClient.filterStatusOk,
     ),
   )
+
+const client = (config: Config) => Effect.map(anyStatusClient(config), HttpClient.filterStatusOk)
 
 const getJson =
   <S extends Schema.Top>(schema: S) =>
@@ -352,14 +355,43 @@ export const fork = (config: Config, id: string, title: string, prompt: string):
     return forked.data.id
   }).pipe(Effect.provide(FetchHttpClient.layer), Effect.withSpan("OpenCode.fork"))
 
+const base62 = "0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz"
+
 /**
- * Puts a message into a session and lets it run. OpenCode admits the message durably, so it survives a restart.
+ * The ID of the message a wake-up becomes: the same for every attempt, so OpenCode admits a wake-up once.
+ *
+ * It has the form of OpenCode's own message IDs: 12 hex digits that grow with time, then 14 base62
+ * characters, which here come from a hash of the wake-up and not from chance.
  */
-export const wake = (config: Config, id: string, text: string): Effect.Effect<void, unknown> =>
+export const messageId = (wake: Wake): Effect.Effect<string> =>
+  Effect.promise(() => crypto.subtle.digest("SHA-256", new TextEncoder().encode(`${wake.session}/${wake.id}`))).pipe(
+    Effect.map((digest) => {
+      const time = ((BigInt(Math.trunc(wake.queuedAt)) * 0x1000n) & 0xffff_ffff_ffffn).toString(16).padStart(12, "0")
+      const suffix = Array.from(new Uint8Array(digest).subarray(0, 14), (byte) => base62.charAt(byte % 62)).join("")
+
+      return `msg_${time}${suffix}`
+    }),
+  )
+
+/**
+ * Puts a wake-up into its session and lets the session run. OpenCode admits the message durably, so it
+ * survives a restart.
+ *
+ * Sending the same wake-up again adds nothing: OpenCode knows the message by its ID. It answers 409 when the
+ * session has taken the message in already, and that counts as delivered.
+ */
+export const wake = (config: Config, wake: Wake): Effect.Effect<void, unknown> =>
   Effect.gen(function* () {
-    const http = yield* client(config)
-    yield* HttpClientRequest.post(`/api/session/${id}/synthetic`).pipe(
-      HttpClientRequest.bodyJsonUnsafe({ text, description: "Ratchet notification", metadata: { ratchet: true } }),
+    const http = yield* anyStatusClient(config)
+    const id = yield* messageId(wake)
+    yield* HttpClientRequest.post(`/api/session/${wake.session}/synthetic`).pipe(
+      HttpClientRequest.bodyJsonUnsafe({
+        id,
+        text: wake.text,
+        description: "Ratchet notification",
+        metadata: { ratchet: { wake: wake.id } },
+      }),
       http.execute,
+      Effect.flatMap(HttpClientResponse.filterStatus((status) => (status >= 200 && status < 300) || status === 409)),
     )
   }).pipe(Effect.provide(FetchHttpClient.layer), Effect.withSpan("OpenCode.wake"))

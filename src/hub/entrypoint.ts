@@ -3,6 +3,7 @@ import { Effect, Schema } from "effect"
 import { type Env, mayWake } from "../env.ts"
 import { PullRequestFacts, type PullRequestRef } from "../protocol/pull-request.ts"
 import { type Binding, SessionFact } from "../protocol/session.ts"
+import type { Wake } from "../protocol/wake.ts"
 import { runtime } from "./cluster.ts"
 import * as Facts from "./facts.ts"
 import * as Index from "./index-store.ts"
@@ -30,7 +31,7 @@ export class Hub extends WorkerEntrypoint<Env> {
 
   #mayWake = (session: string): boolean => mayWake(this.env, session)
 
-  #wake = (session: string, text: string) => Effect.tryPromise(() => this.env.GATEWAY.wake(session, text))
+  #wake = (wake: Wake) => Effect.tryPromise(() => this.env.GATEWAY.wake(wake))
 
   /** Applies an observation of a pull request, then delivers the wake-ups it queued. */
   async pullRequestFacts(

@@ -1,4 +1,4 @@
-import { Effect, Option, Result, Schema } from "effect"
+import { Clock, Effect, Option, Result, Schema } from "effect"
 import { type PullRequestFacts, type PullRequestRef, Relation, WorkStatus, pullRequestKey } from "../protocol/pull-request.ts"
 import { taskOf, tasksOf } from "./commands.ts"
 import * as Index from "./index-store.ts"
@@ -13,6 +13,7 @@ import {
   outcomeOf,
   wakes,
 } from "./pull-request.ts"
+import type { Wake } from "../protocol/wake.ts"
 import { SessionEntity, boundTask } from "./session.ts"
 import { TaskEntity, TaskEvent, isUnborn } from "./task.ts"
 
@@ -200,6 +201,7 @@ export const observe = (db: Index.Database, facts: PullRequestFacts, mayWake: (s
     const tasks = yield* TaskEntity.client
     const sessions = yield* SessionEntity.client
     const outcome = outcomeOf(after)
+    const now = yield* Clock.currentTimeMillis
 
     // Every follower learns that it ended, whether or not its session is woken.
     if (outcome !== null && found.length > 0) {
@@ -223,6 +225,7 @@ export const observe = (db: Index.Database, facts: PullRequestFacts, mayWake: (s
           id: wakeId(key, facts, relevant),
           session: subscriber.session,
           text: wakeText(facts, relevant, { title: task.title, current }),
+          at: now,
         }),
       )
       queued.push(subscriber.task)
@@ -234,9 +237,10 @@ export const observe = (db: Index.Database, facts: PullRequestFacts, mayWake: (s
 /**
  * Delivers a task's queued wake-ups through `wake`, and takes each off the queue once it is delivered.
  *
- * A wake-up that fails stays queued for the next call.
+ * A wake-up that fails stays queued for the next call. `wake` must admit the same wake-up once however often
+ * it is called: a wake-up is sent again when the hub fails after sending it and before recording that.
  */
-export const deliver = <E>(db: Index.Database, task: string, wake: (session: string, text: string) => Effect.Effect<void, E>) =>
+export const deliver = <E>(db: Index.Database, task: string, wake: (wake: Wake) => Effect.Effect<void, E>) =>
   Effect.gen(function* () {
     const state = yield* (yield* TaskEntity.client)(task).GetState()
 
@@ -244,7 +248,7 @@ export const deliver = <E>(db: Index.Database, task: string, wake: (session: str
     let delivered = 0
 
     for (const queued of state.outbox) {
-      const sent = yield* Effect.result(wake(queued.session, queued.text))
+      const sent = yield* Effect.result(wake(queued))
 
       if (Result.isFailure(sent)) continue
       yield* sendTask(db, task, TaskEvent.WakeDelivered({ id: queued.id }))
