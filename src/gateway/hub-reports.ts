@@ -1,0 +1,24 @@
+import { Context, type Effect, Schema } from "effect"
+import type { PullRequestFacts, PullRequestRef } from "../protocol/pull-request.ts"
+import type { Binding, SessionFact } from "../protocol/session.ts"
+
+/** The hub did not take a report, or its answer could not be read. */
+export class HubUnavailable extends Schema.TaggedError<HubUnavailable>()("HubUnavailable", {
+  operation: Schema.String,
+  cause: Schema.Defect(),
+}) {}
+
+/** What the gateway tells the hub, and the little it asks back. */
+export interface Interface {
+  /** Reports facts about sessions in order. The hub answers with the task of each main session they opened. */
+  readonly sessionFacts: (facts: ReadonlyArray<SessionFact>) => Effect.Effect<ReadonlyArray<Binding>, HubUnavailable>
+  /** Reports an observation of a pull request. */
+  readonly pullRequestFacts: (facts: PullRequestFacts) => Effect.Effect<void, HubUnavailable>
+  /** The pull requests the hub wants read again. */
+  readonly watchedPullRequests: Effect.Effect<ReadonlyArray<PullRequestRef>, HubUnavailable>
+  /** Asks the hub to try its undelivered wake-ups again. */
+  readonly deliverWakes: Effect.Effect<void, HubUnavailable>
+}
+
+/** The gateway's line to the hub. */
+export class Service extends Context.Service<Service, Interface>()("@ratchet/gateway/HubReports") {}

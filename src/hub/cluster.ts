@@ -1,16 +1,24 @@
 import { CloudflareCluster, CloudflareDurableObjects } from "@effect/platform-cloudflare"
-import { Layer, ManagedRuntime } from "effect"
+import { Layer, ManagedRuntime, Result } from "effect"
 import { EntityMachine } from "effect-machine/cluster"
+import * as Config from "../config.ts"
 import type { Env } from "../env.ts"
 import * as Telemetry from "../telemetry.ts"
+import * as Cells from "./cells.ts"
+import * as GatewayBinding from "./gateway-binding.ts"
+import * as Index from "./index-store.ts"
 import * as Persistence from "./persistence.ts"
 import { PullRequestEntity, pullRequestMachine } from "./pull-request.ts"
+import * as PullRequests from "./pull-requests.ts"
 import { SessionEntity, sessionMachine } from "./session.ts"
 import { TaskEntity, taskMachine } from "./task.ts"
+import * as Tasks from "./tasks.ts"
+import * as WakePolicy from "./wake-policy.ts"
 
 const journal = { persistence: { strategy: "journal" } } as const
 
-const layer = (env: Env) =>
+/** The cells on the cluster: each machine as an entity, with its journal in its own Durable Object. */
+const cells = (env: Env, config: Config.Hub) =>
   Layer.mergeAll(
     EntityMachine.layer(TaskEntity, taskMachine, journal),
     EntityMachine.layer(SessionEntity, sessionMachine, journal),
@@ -26,7 +34,7 @@ const layer = (env: Env) =>
         CloudflareCluster.DurableObjectSqlClient.orDie,
       ),
     ),
-    Layer.provideMerge(Telemetry.layer(env, "ratchet-hub")),
+    Layer.provideMerge(Telemetry.layer(config.tracing, "ratchet-hub")),
     Layer.provideMerge(
       CloudflareCluster.layer({
         entities: [TaskEntity, SessionEntity, PullRequestEntity],
@@ -38,16 +46,36 @@ const layer = (env: Env) =>
     ),
   )
 
+/** The hub: its application services on the cells, the D1 index and the gateway's binding. */
+const layer = (env: Env, config: Config.Hub) =>
+  PullRequests.layerWithoutDependencies.pipe(
+    Layer.provideMerge(Tasks.layerWithoutDependencies),
+    Layer.provideMerge(Cells.layerWithoutDependencies),
+    Layer.provideMerge(
+      Layer.mergeAll(
+        Index.layer(Index.d1(env.INDEX)),
+        GatewayBinding.layer(env.GATEWAY),
+        Layer.succeed(WakePolicy.Service, config.wake),
+      ),
+    ),
+    Layer.provideMerge(cells(env, config)),
+  )
+
 /** What an effect may require when it runs on the hub's runtime. */
 export type Services = Layer.Success<ReturnType<typeof layer>>
 
+/** The hub's runtime in one isolate. */
 export type Runtime = ManagedRuntime.ManagedRuntime<Services, never>
 
 let application: Runtime | undefined
 
 const build = async (env: Env): Promise<Runtime> => {
   if (application !== undefined) return application
-  const runtime = ManagedRuntime.make(layer(env))
+  const config = Config.hub(env)
+
+  // A setting the hub cannot start with fails every call, with a message that names the setting.
+  if (Result.isFailure(config)) throw config.failure
+  const runtime = ManagedRuntime.make(layer(env, config.success))
   await runtime.context().catch(async (error) => {
     await runtime.dispose()
     throw error
@@ -67,7 +95,7 @@ const build = async (env: Env): Promise<Runtime> => {
 
 const initialize = CloudflareDurableObjects.setInitializer((env: Env) => build(env).then((runtime) => runtime.context()))
 
-/** The cluster runtime of this isolate, built on first use by a Worker event or a Durable Object. */
+/** The hub's runtime in this isolate, built on first use by a Worker event or a Durable Object. */
 export const runtime = async (env: Env): Promise<Runtime> => {
   await initialize(env)
 

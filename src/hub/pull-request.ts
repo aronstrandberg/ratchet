@@ -1,6 +1,7 @@
 import { Schema } from "effect"
 import { Event, Machine, State } from "effect-machine"
 import { toEntity } from "effect-machine/cluster"
+import { SessionId, TaskId } from "../protocol/ids.ts"
 import { Check, type Outcome, PullRequestFacts, PullRequestRef, Relation, Review, Thread } from "../protocol/pull-request.ts"
 
 /**
@@ -13,6 +14,7 @@ export const Ci = Schema.TaggedUnion({
   Finished: { failed: Schema.Array(Schema.String) },
 })
 
+/** Where CI stands on a head commit. */
 export type Ci = typeof Ci.Type
 
 /** The counted checks that have failed so far. */
@@ -24,8 +26,9 @@ export const failedChecks = (ci: Ci): ReadonlyArray<string> =>
   })
 
 /** A task that follows this pull request, and the session of it that attached. */
-export const Subscriber = Schema.Struct({ task: Schema.String, session: Schema.String, relation: Relation })
+export const Subscriber = Schema.Struct({ task: TaskId, session: SessionId, relation: Relation })
 
+/** A task that follows a pull request. */
 export type Subscriber = typeof Subscriber.Type
 
 const subscribers = { subscribers: Schema.Array(Subscriber) }
@@ -44,6 +47,7 @@ const open = {
   viewer: Schema.String,
 }
 
+/** What the hub holds about a pull request: what GitHub last said, and who follows it. */
 export const PullRequestState = State({
   Unseen: subscribers,
   Open: { ...open, ...subscribers },
@@ -51,12 +55,14 @@ export const PullRequestState = State({
   Closed: { ref: PullRequestRef, title: Schema.String, ...subscribers },
 })
 
+/** A pull request's state, in any of its tags. */
 export type PullRequestState = typeof PullRequestState.Type
 
+/** What can happen to a pull request as the hub sees it. */
 export const PullRequestEvent = Event({
   Observed: { facts: PullRequestFacts },
   Attached: { subscriber: Subscriber },
-  Detached: { task: Schema.String },
+  Detached: { task: TaskId },
 })
 
 /** CI counts the checks the base branch requires, or every check when it requires none. */
@@ -95,6 +101,7 @@ const project = (facts: PullRequestFacts, subscribers: ReadonlyArray<Subscriber>
 
 const any = [PullRequestState.Unseen, PullRequestState.Open, PullRequestState.Merged, PullRequestState.Closed] as const
 
+/** How a pull request's state follows from what happens to it. */
 export const pullRequestMachine = Machine.make({
   state: PullRequestState,
   event: PullRequestEvent,
@@ -110,6 +117,7 @@ export const pullRequestMachine = Machine.make({
     PullRequestState.with(state, { subscribers: state.subscribers.filter((s) => s.task !== event.task) }),
   )
 
+/** A pull request as a cell: one per pull request key. */
 export const PullRequestEntity = toEntity(pullRequestMachine, { type: "PullRequest" })
 
 /** Something that happened to a pull request, in terms a task can act on. */
@@ -130,6 +138,7 @@ export const Change = Schema.TaggedUnion({
   Closed: {},
 })
 
+/** One thing that happened to a pull request. */
 export type Change = typeof Change.Type
 
 /**

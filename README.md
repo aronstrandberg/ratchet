@@ -36,6 +36,9 @@ The first run creates the checkout. `scripts/dev-vars.sh` writes its
 
 State lives in `.celld/dev` of the service's checkout.
 
+`scripts/scratch.sh` runs a scratch Ratchet with empty state against a stand-in
+for OpenCode, for trying a change end to end before it is deployed.
+
 ## Checks
 
 `bun run check` runs everything a commit must pass:

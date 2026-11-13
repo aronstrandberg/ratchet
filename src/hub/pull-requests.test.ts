@@ -1,28 +1,19 @@
 import { expect, test } from "bun:test"
-import { Effect, Layer } from "effect"
-import { TestRunner } from "effect/cluster"
-import { EntityMachine } from "effect-machine/cluster"
+import { Effect } from "effect"
+import { SessionId } from "../protocol/ids.ts"
 import type { Check, PullRequestFacts } from "../protocol/pull-request.ts"
 import { SessionFact, SessionOrigin } from "../protocol/session.ts"
-import type { Wake } from "../protocol/wake.ts"
-import * as Commands from "./commands.ts"
-import * as Facts from "./facts.ts"
-import { PullRequestEntity, pullRequestMachine } from "./pull-request.ts"
+import * as Index from "./index-store.ts"
 import * as PullRequests from "./pull-requests.ts"
-import { SessionEntity, sessionMachine } from "./session.ts"
-import { TaskEntity, taskMachine } from "./task.ts"
-import { noIndex } from "./testing.ts"
+import * as Tasks from "./tasks.ts"
+import * as TestHub from "./test-hub.ts"
+import { WakePolicy } from "./wake-policy.ts"
 
-const cells = Layer.mergeAll(
-  EntityMachine.layer(TaskEntity, taskMachine),
-  EntityMachine.layer(SessionEntity, sessionMachine),
-  EntityMachine.layer(PullRequestEntity, pullRequestMachine),
-).pipe(Layer.provideMerge(TestRunner.layer))
-
-const run = <A, E>(program: Effect.Effect<A, E, Layer.Success<typeof cells>>) =>
-  Effect.runPromise(program.pipe(Effect.provide(cells)))
+const run = <A, E>(program: Effect.Effect<A, E, TestHub.Services>, wake?: WakePolicy) =>
+  Effect.runPromise(program.pipe(Effect.provide(TestHub.layer(wake))))
 
 const ref = { owner: "o", repo: "r", number: 1 }
+const session = SessionId.make("ses_1")
 
 const facts = (over: Partial<PullRequestFacts> = {}): PullRequestFacts => ({
   ref,
@@ -42,141 +33,150 @@ const facts = (over: Partial<PullRequestFacts> = {}): PullRequestFacts => ({
 
 const check = (name: string, state: Check["state"]): Check => ({ name, state, required: true })
 
-const open = (session: string) =>
-  Facts.apply(
-    noIndex,
-    SessionFact.cases.Opened.make({
-      session,
-      title: session,
-      origin: SessionOrigin.cases.Root.make({}),
-      running: false,
-      subagents: [],
-      questions: [],
-    }),
-  )
+/** A session the hub knows, with `title` as the title of its task, and the pull request on GitHub. */
+const setUp = (title = "Speed up the build", published: PullRequestFacts = facts()) =>
+  Effect.gen(function* () {
+    const tasks = yield* Tasks.Service
+    const outside = yield* TestHub.Control
 
-const everyone = () => true
+    yield* tasks.observe([
+      SessionFact.cases.Opened.make({
+        session,
+        title,
+        origin: SessionOrigin.cases.Root.make({}),
+        running: false,
+        subagents: [],
+        questions: [],
+      }),
+    ])
+    yield* outside.publish(published)
 
-test("a failed delivery keeps the wake-up, and the next delivery sends it once", () =>
+    return { tasks, outside, pullRequests: yield* PullRequests.Service }
+  })
+
+test("a wake-up OpenCode refuses stays queued, and the next delivery sends it once", () =>
   run(
     Effect.gen(function* () {
-      yield* open("ses_owner")
-      const { task } = yield* PullRequests.register(noIndex, "ses_owner", ref, "owns")
-      yield* PullRequests.observe(noIndex, facts({ checks: [check("build", "pending")] }), everyone)
-      const observed = yield* PullRequests.observe(noIndex, facts({ checks: [check("build", "failure")] }), everyone)
-      expect(observed.queued).toEqual([task])
+      const { pullRequests, outside } = yield* setUp("Speed up the build", facts({ checks: [check("build", "pending")] }))
+      yield* pullRequests.register(session, ref, "owns")
 
-      const sent: Array<string> = []
-      const down = () => Effect.fail("OpenCode is down")
-      const up = (wake: Wake) => Effect.sync(() => void sent.push(`${wake.session}: ${wake.text}`))
-      expect(yield* PullRequests.deliver(noIndex, task, down)).toBe(0)
-      expect(yield* PullRequests.deliver(noIndex, task, up)).toBe(1)
-      expect(yield* PullRequests.deliver(noIndex, task, up)).toBe(0)
-      expect(sent).toHaveLength(1)
-      expect(sent[0]).toContain("ses_owner: Ratchet: pull request o/r#1 changed.")
-      expect(sent[0]).toContain("CI finished on aaaaaaa with failing required checks: build.")
+      yield* outside.refuseWakes(true)
+      const observed = yield* pullRequests.observe(facts({ checks: [check("build", "failure")] }))
+      expect(observed).toEqual({ changes: ["CiFinished"], woke: 0 })
+
+      yield* outside.refuseWakes(false)
+      expect(yield* pullRequests.deliverPending).toBe(1)
+      expect(yield* pullRequests.deliverPending).toBe(0)
+
+      const wakes = yield* outside.wakes
+      expect(wakes.map((wake) => wake.session)).toEqual([session])
+      expect(wakes[0]?.text).toContain("Ratchet: pull request o/r#1 changed.")
+      expect(wakes[0]?.text).toContain("CI finished on aaaaaaa with failing required checks: build.")
+      expect(wakes[0]?.text).toContain('It belongs to your task "Speed up the build".')
     }),
   ))
 
 test("a task that waits on a pull request hears its merge and not its CI or reviews", () =>
   run(
     Effect.gen(function* () {
-      yield* open("ses_waiter")
-      const { task } = yield* PullRequests.register(noIndex, "ses_waiter", ref, "waits_on")
-      yield* PullRequests.observe(noIndex, facts({ checks: [check("build", "pending")] }), everyone)
+      const { pullRequests } = yield* setUp("Speed up the build", facts({ checks: [check("build", "pending")] }))
+      yield* pullRequests.register(session, ref, "waits_on")
 
-      const noisy = yield* PullRequests.observe(
-        noIndex,
+      const noisy = yield* pullRequests.observe(
         facts({
           checks: [check("build", "failure")],
           reviews: [{ id: "r1", author: "reviewer", state: "changes_requested" }],
         }),
-        everyone,
       )
 
-      expect(noisy.changes).toEqual(["CiFinished", "ReviewSubmitted"])
-      expect(noisy.queued).toEqual([])
-      const merged = yield* PullRequests.observe(noIndex, facts({ state: "merged" }), everyone)
-      expect(merged.queued).toEqual([task])
+      expect(noisy).toEqual({ changes: ["CiFinished", "ReviewSubmitted"], woke: 0 })
+      expect(yield* pullRequests.observe(facts({ state: "merged" }))).toEqual({ changes: ["Merged"], woke: 1 })
     }),
   ))
 
-test("a session that may not be woken gets no wake-up queued", () =>
+test("a session the policy does not let Ratchet wake gets no wake-up, and is told so when it registers", () =>
   run(
     Effect.gen(function* () {
-      yield* open("ses_quiet")
-      yield* PullRequests.register(noIndex, "ses_quiet", ref, "owns")
-      yield* PullRequests.observe(noIndex, facts(), everyone)
-      const merged = yield* PullRequests.observe(noIndex, facts({ state: "merged" }), () => false)
-      expect(merged.changes).toEqual(["Merged"])
-      expect(merged.queued).toEqual([])
+      const { pullRequests, outside } = yield* setUp()
+      expect((yield* pullRequests.register(session, ref, "owns")).wakes).toBe(false)
+
+      expect(yield* pullRequests.observe(facts({ state: "merged" }))).toEqual({ changes: ["Merged"], woke: 0 })
+      expect(yield* pullRequests.deliverPending).toBe(0)
+      expect(yield* outside.wakes).toEqual([])
+    }),
+    WakePolicy.cases.Nobody.make({}),
+  ))
+
+test("reporting that a pull request waits on me puts its task in front of me, until it merges", () =>
+  run(
+    Effect.gen(function* () {
+      const { pullRequests, tasks, outside } = yield* setUp()
+      yield* pullRequests.register(session, ref, "owns")
+      expect((yield* tasks.current(session)).state).toBe("Idle")
+
+      yield* pullRequests.setStatus(session, ref, "waiting-user", "Please merge.")
+      expect((yield* tasks.current(session)).state).toBe("NeedsMe")
+
+      // OpenCode refuses the wake-up, and the task still learns that the pull request ended.
+      yield* outside.refuseWakes(true)
+      yield* pullRequests.observe(facts({ state: "merged" }))
+      expect((yield* tasks.current(session)).state).toBe("Idle")
     }),
   ))
 
-test("reporting that a pull request waits on me puts its task in front of me", () =>
+test("a status for a pull request no task of the session follows is refused", () =>
   run(
     Effect.gen(function* () {
-      yield* open("ses_done")
-      yield* PullRequests.register(noIndex, "ses_done", ref, "owns")
-      expect((yield* Commands.current("ses_done")).state).toBe("Idle")
-      yield* PullRequests.setStatus(noIndex, "ses_done", ref, "waiting-user", "Ready for your review.")
-      expect((yield* Commands.current("ses_done")).state).toBe("NeedsMe")
+      const { pullRequests } = yield* setUp()
+      const refused = yield* Effect.flip(pullRequests.setStatus(session, ref, "ready", "Nothing left."))
 
-      const unknown = yield* Effect.flip(
-        PullRequests.setStatus(noIndex, "ses_done", { ...ref, number: 2 }, "ready", "Nothing left."),
-      )
+      expect(refused._tag).toBe("NotRegistered")
+    }),
+  ))
 
-      expect(unknown._tag).toBe("NotRegistered")
+test("a pull request GitHub does not have is refused and not followed", () =>
+  run(
+    Effect.gen(function* () {
+      const { pullRequests } = yield* setUp()
+      const missing = yield* Effect.flip(pullRequests.register(session, { ...ref, number: 2 }, "owns"))
+
+      expect(missing._tag).toBe("PullRequestNotFound")
+      expect((yield* pullRequests.list(session)).pullRequests).toEqual([])
+      expect(yield* Effect.flatMap(Index.Service, (index) => index.pullRequests("all"))).toEqual([])
     }),
   ))
 
 test("a session that started another task still reports on the pull request of its earlier task", () =>
   run(
     Effect.gen(function* () {
-      yield* open("ses_mover")
-      const first = yield* PullRequests.register(noIndex, "ses_mover", ref, "owns")
-      const started = yield* Commands.start(noIndex, "ses_mover", "Something else", "sibling")
+      const { pullRequests, tasks } = yield* setUp()
+      const first = yield* pullRequests.register(session, ref, "owns")
+      const started = yield* tasks.start(session, "Something else", "sibling")
       expect(started.task.id).not.toBe(first.task)
 
-      const reported = yield* PullRequests.setStatus(noIndex, "ses_mover", ref, "waiting-ci", "Checks run.")
-      expect(reported.task).toBe(first.task)
+      expect((yield* pullRequests.setStatus(session, ref, "waiting-ci", "Checks run.")).task).toBe(first.task)
       // Registering again does not attach it to the new task as well.
-      expect((yield* PullRequests.register(noIndex, "ses_mover", ref, "owns")).task).toBe(first.task)
+      expect((yield* pullRequests.register(session, ref, "owns")).task).toBe(first.task)
 
-      const following = yield* PullRequests.list("ses_mover")
+      const following = yield* pullRequests.list(session)
       expect(following.task).toBe(started.task.id)
       expect(following.pullRequests.map(({ task, status }) => ({ task, status }))).toEqual([
         { task: first.task, status: "waiting-ci" },
       ])
+      // Someone still follows it and it can change, so it is read again.
+      expect(yield* pullRequests.watched).toEqual([ref])
     }),
   ))
 
 test("a wake-up for an earlier task says the session now works on another one", () =>
   run(
     Effect.gen(function* () {
-      yield* open("ses_later")
-      const { task } = yield* PullRequests.register(noIndex, "ses_later", ref, "owns")
-      yield* PullRequests.observe(noIndex, facts(), everyone)
-      yield* Commands.start(noIndex, "ses_later", "Something else", "child")
-      yield* PullRequests.observe(noIndex, facts({ state: "merged" }), everyone)
+      const { pullRequests, tasks, outside } = yield* setUp("Speed up the build")
+      yield* pullRequests.register(session, ref, "owns")
+      yield* tasks.start(session, "Something else", "child")
+      yield* pullRequests.observe(facts({ state: "merged" }))
 
-      const sent: Array<string> = []
-      yield* PullRequests.deliver(noIndex, task, (wake) => Effect.sync(() => void sent.push(wake.text)))
-      expect(sent[0]).toContain('It belongs to "ses_later", a task you worked on before the one you work on now.')
-    }),
-  ))
-
-test("a task that waited on me for a pull request stops needing me once it merges", () =>
-  run(
-    Effect.gen(function* () {
-      yield* open("ses_asker")
-      yield* PullRequests.register(noIndex, "ses_asker", ref, "owns")
-      yield* PullRequests.observe(noIndex, facts(), everyone)
-      yield* PullRequests.setStatus(noIndex, "ses_asker", ref, "waiting-user", "Please merge.")
-      expect((yield* Commands.current("ses_asker")).state).toBe("NeedsMe")
-
-      // The session may not be woken, and the task still learns that the pull request ended.
-      yield* PullRequests.observe(noIndex, facts({ state: "merged" }), () => false)
-      expect((yield* Commands.current("ses_asker")).state).toBe("Idle")
+      const [wake] = yield* outside.wakes
+      expect(wake?.text).toContain('It belongs to "Speed up the build", a task you worked on before the one you work on now.')
     }),
   ))

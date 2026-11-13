@@ -1,5 +1,6 @@
 import { expect, test } from "bun:test"
 import { Schema } from "effect"
+import { TaskId } from "../protocol/ids.ts"
 import { sessionMachine, tasksOf } from "./session.ts"
 import { isUnborn, taskMachine } from "./task.ts"
 
@@ -9,7 +10,7 @@ import { isUnborn, taskMachine } from "./task.ts"
 const storedSession = Schema.decodeUnknownSync(Schema.fromJsonString(Schema.toCodecJson(sessionMachine.stateSchema)))
 
 test("a session stored before sessions remembered their earlier tasks still loads", () => {
-  expect(tasksOf(storedSession('{"_tag":"Bound","task":"tsk_1"}'))).toEqual(["tsk_1"])
+  expect(tasksOf(storedSession('{"_tag":"Bound","task":"tsk_1"}'))).toEqual([TaskId.make("tsk_1")])
 })
 
 const storedTask = Schema.decodeUnknownSync(Schema.fromJsonString(Schema.toCodecJson(taskMachine.stateSchema)))

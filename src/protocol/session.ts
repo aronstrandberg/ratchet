@@ -1,9 +1,10 @@
 import { Schema } from "effect"
+import { SessionId, TaskId } from "./ids.ts"
 
 /** Where a main session came from. A fork gets a child task of the origin's task. */
 export const SessionOrigin = Schema.TaggedUnion({
   Root: {},
-  Fork: { of: Schema.String },
+  Fork: { of: SessionId },
 })
 
 export type SessionOrigin = typeof SessionOrigin.Type
@@ -26,26 +27,25 @@ export type Question = typeof Question.Type
 export const SessionFact = Schema.TaggedUnion({
   /** The whole observable state of a main session. Replaces what the hub holds for it. */
   Opened: {
-    session: Schema.String,
+    session: SessionId,
     title: Schema.NullOr(Schema.String),
     origin: SessionOrigin,
     running: Schema.Boolean,
-    subagents: Schema.Array(Schema.String),
+    subagents: Schema.Array(SessionId),
     questions: Schema.Array(Question),
   },
-  Started: { session: Schema.String },
-  Idle: { session: Schema.String },
-  Renamed: { session: Schema.String, title: Schema.String },
-  SubagentStarted: { of: Schema.String, session: Schema.String },
-  SubagentStopped: { of: Schema.String, session: Schema.String },
-  Asked: { of: Schema.String, question: Question },
-  Answered: { of: Schema.String, id: Schema.String },
+  Started: { session: SessionId },
+  Idle: { session: SessionId },
+  Renamed: { session: SessionId, title: Schema.String },
+  SubagentStarted: { of: SessionId, session: SessionId },
+  SubagentStopped: { of: SessionId, session: SessionId },
+  Asked: { of: SessionId, question: Question },
+  Answered: { of: SessionId, id: Schema.String },
 })
 
 export type SessionFact = typeof SessionFact.Type
 
 /** The task a main session works on, as the hub decided it. */
-export interface Binding {
-  readonly session: string
-  readonly task: string
-}
+export const Binding = Schema.Struct({ session: SessionId, task: TaskId })
+
+export type Binding = typeof Binding.Type

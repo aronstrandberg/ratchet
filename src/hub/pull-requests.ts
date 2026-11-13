@@ -1,10 +1,19 @@
-import { Clock, Effect, Option, Result, Schema } from "effect"
-import { type PullRequestFacts, type PullRequestRef, Relation, WorkStatus, pullRequestKey } from "../protocol/pull-request.ts"
-import { taskOf, tasksOf } from "./commands.ts"
+import { Clock, Context, Effect, Layer, Option, Result, Schema } from "effect"
+import { type SessionId, TaskId } from "../protocol/ids.ts"
+import {
+  type PullRequestFacts,
+  PullRequestKey,
+  type PullRequestRef,
+  Relation,
+  WorkStatus,
+  keyOf,
+  refOf,
+} from "../protocol/pull-request.ts"
+import * as Cells from "./cells.ts"
 import * as Index from "./index-store.ts"
+import * as PullRequestSource from "./pull-request-source.ts"
 import {
   type Change,
-  PullRequestEntity,
   PullRequestEvent,
   PullRequestState,
   changes,
@@ -13,90 +22,16 @@ import {
   outcomeOf,
   wakes,
 } from "./pull-request.ts"
-import type { Wake } from "../protocol/wake.ts"
-import { SessionEntity, boundTask } from "./session.ts"
-import { TaskEntity, TaskEvent, isUnborn } from "./task.ts"
+import * as SessionControl from "./session-control.ts"
+import { boundTask } from "./session.ts"
+import { TaskEvent, isUnborn } from "./task.ts"
+import * as Tasks from "./tasks.ts"
+import * as WakePolicy from "./wake-policy.ts"
 
-const sendTask = (db: Index.Database, task: string, event: typeof TaskEvent.Type) =>
-  Effect.flatMap(TaskEntity.client, (tasks) => tasks(task).Send({ event })).pipe(
-    Effect.tap((state) => Index.put(db, task, state)),
-  )
-
+/** No task of the session follows this pull request. */
 export class NotRegistered extends Schema.TaggedError<NotRegistered>()("NotRegistered", {
-  pullRequest: Schema.String,
+  pullRequest: PullRequestKey,
 }) {}
-
-const attachmentsOf = (task: string) =>
-  Effect.flatMap(TaskEntity.client, (tasks) => tasks(task).GetState()).pipe(
-    Effect.map((state) => (isUnborn(state) ? [] : state.attachments)),
-  )
-
-/**
- * The task of the session that follows a pull request.
- *
- * A pull request stays with the task it was attached to when its session starts another task, so this looks
- * through every task the session has worked on, the current one first.
- */
-const followerOf = (session: string, key: string) =>
-  Effect.gen(function* () {
-    for (const task of yield* tasksOf(session)) {
-      if ((yield* attachmentsOf(task)).some((attachment) => attachment.resource === key)) return Option.some(task)
-    }
-
-    return Option.none<string>()
-  })
-
-const followerOrFail = (session: string, key: string) =>
-  Effect.flatMap(
-    followerOf(session, key),
-    Option.match({
-      onNone: () => Effect.fail(new NotRegistered({ pullRequest: key })),
-      onSome: (task) => Effect.succeed(task),
-    }),
-  )
-
-/**
- * Attaches a pull request to a task of the session, so the task hears what happens to it.
- *
- * The task is the session's current one, unless one of its earlier tasks follows the pull request already.
- */
-export const register = (db: Index.Database, session: string, ref: PullRequestRef, relation: Relation) =>
-  Effect.gen(function* () {
-    const key = pullRequestKey(ref)
-    const follower = yield* followerOf(session, key)
-    const task = Option.isSome(follower) ? follower.value : yield* taskOf(session)
-
-    const pullRequest = yield* (yield* PullRequestEntity.client)(key).Send({
-      event: PullRequestEvent.Attached({ subscriber: { task, session, relation } }),
-    })
-
-    yield* Index.putPullRequest(db, key, pullRequest)
-    yield* sendTask(db, task, TaskEvent.Attached({ resource: key, relation, session }))
-
-    return { task, pullRequest: key }
-  })
-
-/** Records what the session says about its work on a pull request one of its tasks follows. */
-export const setStatus = (db: Index.Database, session: string, ref: PullRequestRef, status: WorkStatus, note: string) =>
-  Effect.gen(function* () {
-    const key = pullRequestKey(ref)
-    const task = yield* followerOrFail(session, key)
-    yield* sendTask(db, task, TaskEvent.StatusSet({ resource: key, status, note }))
-
-    return { task, pullRequest: key }
-  })
-
-/** Stops a task of the session following a pull request. */
-export const unregister = (db: Index.Database, session: string, ref: PullRequestRef) =>
-  Effect.gen(function* () {
-    const key = pullRequestKey(ref)
-    const task = yield* followerOrFail(session, key)
-    const pullRequest = yield* (yield* PullRequestEntity.client)(key).Send({ event: PullRequestEvent.Detached({ task }) })
-    yield* Index.putPullRequest(db, key, pullRequest)
-    yield* sendTask(db, task, TaskEvent.Detached({ resource: key }))
-
-    return { task, pullRequest: key }
-  })
 
 /** What GitHub last said about a pull request. Only an open one has more than its state. */
 const GitHubView = Schema.Struct({
@@ -112,9 +47,9 @@ const GitHubView = Schema.Struct({
 type GitHubView = typeof GitHubView.Type
 
 const Followed = Schema.Struct({
-  pullRequest: Schema.String,
+  pullRequest: PullRequestKey,
   /** The task that follows it: the session's current task or one it worked on before. */
-  task: Schema.String,
+  task: TaskId,
   relation: Relation,
   status: WorkStatus,
   note: Schema.String,
@@ -122,7 +57,66 @@ const Followed = Schema.Struct({
 })
 
 /** The pull requests the tasks of a session follow. `task` is the session's current task. */
-export const Following = Schema.Struct({ task: Schema.String, pullRequests: Schema.Array(Followed) })
+export const Following = Schema.Struct({ task: TaskId, pullRequests: Schema.Array(Followed) })
+
+export type Following = typeof Following.Type
+
+/** A pull request and the task of the session that follows it. */
+export const Registration = Schema.Struct({ task: TaskId, pullRequest: PullRequestKey })
+
+export type Registration = typeof Registration.Type
+
+/** What applying an observation did: the changes it found and how many wake-ups reached their session. */
+export interface Observed {
+  readonly changes: ReadonlyArray<Change["_tag"]>
+  readonly woke: number
+}
+
+type Failure = Cells.CellUnavailable | Index.IndexError
+
+/** The pull requests tasks follow: who follows what, what changed, and who is told. */
+export interface Interface {
+  /**
+   * Attaches a pull request to a task of the session and reads it from GitHub for the first time.
+   *
+   * The task is the session's current one, unless one of its earlier tasks follows the pull request already.
+   * `wakes` says whether Ratchet will message the session when the pull request needs action.
+   */
+  readonly register: (
+    session: SessionId,
+    ref: PullRequestRef,
+    relation: Relation,
+  ) => Effect.Effect<
+    Registration & { readonly wakes: boolean },
+    Tasks.NoTask | PullRequestSource.PullRequestNotFound | PullRequestSource.PullRequestUnreadable | Failure
+  >
+  /** Records what the session says about its work on a pull request one of its tasks follows. */
+  readonly setStatus: (
+    session: SessionId,
+    ref: PullRequestRef,
+    status: WorkStatus,
+    note: string,
+  ) => Effect.Effect<Registration, Tasks.NoTask | NotRegistered | Failure>
+  /** Stops a task of the session following a pull request. */
+  readonly unregister: (
+    session: SessionId,
+    ref: PullRequestRef,
+  ) => Effect.Effect<Registration, Tasks.NoTask | NotRegistered | Failure>
+  /** The pull requests the session's tasks follow, with what GitHub last said about each. */
+  readonly list: (session: SessionId) => Effect.Effect<Following, Tasks.NoTask | Cells.CellUnavailable>
+  /**
+   * Applies a fresh observation of a pull request, queues a wake-up for each session it concerns, and
+   * delivers those wake-ups.
+   */
+  readonly observe: (facts: PullRequestFacts) => Effect.Effect<Observed, Failure>
+  /** Tries again to deliver every wake-up that has not reached its session, and returns how many did. */
+  readonly deliverPending: Effect.Effect<number, Failure>
+  /** The pull requests worth reading again: someone follows them and they are not merged or closed. */
+  readonly watched: Effect.Effect<ReadonlyArray<PullRequestRef>, Index.IndexError>
+}
+
+/** The hub's pull requests. */
+export class Service extends Context.Service<Service, Interface>()("@ratchet/hub/PullRequests") {}
 
 const githubView = (state: PullRequestState): GitHubView =>
   PullRequestState.$match<GitHubView>(state, {
@@ -138,29 +132,6 @@ const githubView = (state: PullRequestState): GitHubView =>
       queued: open.queued,
       openThreads: open.threads.filter((thread) => !thread.resolved).length,
     }),
-  })
-
-/** The pull requests the session's tasks follow, with what GitHub last said about each. */
-export const list = (session: string) =>
-  Effect.gen(function* () {
-    const task = yield* taskOf(session)
-    const pullRequests = yield* PullRequestEntity.client
-    const rows: Array<typeof Followed.Type> = []
-
-    for (const follower of yield* tasksOf(session)) {
-      for (const attachment of yield* attachmentsOf(follower)) {
-        rows.push({
-          pullRequest: attachment.resource,
-          task: follower,
-          relation: attachment.relation,
-          status: attachment.status,
-          note: attachment.note,
-          github: githubView(yield* pullRequests(attachment.resource).GetState()),
-        })
-      }
-    }
-
-    return { task, pullRequests: rows }
   })
 
 /** The task a wake-up is about, as the woken session should read it. */
@@ -181,45 +152,93 @@ const wakeText = (facts: PullRequestFacts, relevant: ReadonlyArray<Change>, subj
   ].join("\n")
 
 /** A stable ID for one batch of changes on one head, so the same observation never wakes a session twice. */
-const wakeId = (key: string, facts: PullRequestFacts, relevant: ReadonlyArray<Change>) =>
+const wakeId = (key: PullRequestKey, facts: PullRequestFacts, relevant: ReadonlyArray<Change>) =>
   `${key}@${facts.head.slice(0, 12)}:${relevant.map((change) => change._tag).join("+")}`
 
-/**
- * Applies a fresh observation of a pull request and queues a wake-up for each session it concerns.
- *
- * `mayWake` says which sessions may be woken. It returns the tasks that now hold undelivered wake-ups.
- */
-export const observe = (db: Index.Database, facts: PullRequestFacts, mayWake: (session: string) => boolean) =>
-  Effect.gen(function* () {
-    const key = pullRequestKey(facts.ref)
-    const pullRequest = (yield* PullRequestEntity.client)(key)
-    const before = yield* pullRequest.GetState()
-    const after = yield* pullRequest.Send({ event: PullRequestEvent.Observed({ facts }) })
-    yield* Index.putPullRequest(db, key, after)
+/** Builds the pull requests on the cells, the tasks, the index, GitHub reads and control over sessions. */
+export const make = Effect.gen(function* () {
+  const cells = yield* Cells.Service
+  const tasks = yield* Tasks.Service
+  const index = yield* Index.Service
+  const source = yield* PullRequestSource.Service
+  const control = yield* SessionControl.Service
+  const policy = yield* WakePolicy.Service
+
+  const attachmentsOf = (task: TaskId) =>
+    Effect.map(cells.task(task), (state) => (isUnborn(state) ? [] : state.attachments))
+
+  /**
+   * The task of the session that follows a pull request.
+   *
+   * A pull request stays with the task it was attached to when its session starts another task, so this
+   * looks through every task the session has worked on, the current one first.
+   */
+  const followerOf = Effect.fn("PullRequests.followerOf")(function* (session: SessionId, key: PullRequestKey) {
+    for (const task of yield* tasks.tasksOf(session)) {
+      if ((yield* attachmentsOf(task)).some((attachment) => attachment.resource === key)) return Option.some(task)
+    }
+
+    return Option.none<TaskId>()
+  })
+
+  const followerOrFail = (session: SessionId, key: PullRequestKey) =>
+    Effect.flatMap(
+      followerOf(session, key),
+      Option.match({
+        onNone: () => Effect.fail(new NotRegistered({ pullRequest: key })),
+        onSome: (task) => Effect.succeed(task),
+      }),
+    )
+
+  const detach = Effect.fn("PullRequests.detach")(function* (task: TaskId, key: PullRequestKey) {
+    yield* cells.sendPullRequest(key, PullRequestEvent.Detached({ task }))
+    yield* cells.sendTask(task, TaskEvent.Detached({ resource: key }))
+  })
+
+  const deliver = Effect.fn("PullRequests.deliver")(function* (task: TaskId) {
+    const state = yield* cells.task(task)
+
+    if (isUnborn(state)) return 0
+    let delivered = 0
+
+    for (const queued of state.outbox) {
+      // A wake-up that fails stays queued. It is sent again with the same ID, which OpenCode admits once.
+      const sent = yield* Effect.result(control.wake(queued))
+
+      if (Result.isFailure(sent)) continue
+      yield* cells.sendTask(task, TaskEvent.WakeDelivered({ id: queued.id }))
+      delivered++
+    }
+
+    return delivered
+  })
+
+  const observe = Effect.fn("PullRequests.observe")(function* (facts: PullRequestFacts) {
+    const key = keyOf(facts.ref)
+    const before = yield* cells.pullRequest(key)
+    const after = yield* cells.sendPullRequest(key, PullRequestEvent.Observed({ facts }))
     const found = changes(before, after)
-    const queued: Array<string> = []
-    const tasks = yield* TaskEntity.client
-    const sessions = yield* SessionEntity.client
     const outcome = outcomeOf(after)
     const now = yield* Clock.currentTimeMillis
 
     // Every follower learns that it ended, whether or not its session is woken.
     if (outcome !== null && found.length > 0) {
       for (const subscriber of after.subscribers) {
-        yield* sendTask(db, subscriber.task, TaskEvent.ResourceEnded({ resource: key, outcome }))
+        yield* cells.sendTask(subscriber.task, TaskEvent.ResourceEnded({ resource: key, outcome }))
       }
     }
+
+    let woke = 0
 
     for (const subscriber of after.subscribers) {
       const relevant = found.filter((change) => wakes(subscriber.relation, change))
 
-      if (relevant.length === 0 || !mayWake(subscriber.session)) continue
-      const task = yield* tasks(subscriber.task).GetState()
+      if (relevant.length === 0 || !WakePolicy.allows(policy, subscriber.session)) continue
+      const task = yield* cells.task(subscriber.task)
 
       if (isUnborn(task)) continue
-      const current = boundTask(yield* sessions(subscriber.session).GetState()) === subscriber.task
-      yield* sendTask(
-        db,
+      const current = boundTask(yield* cells.session(subscriber.session)) === subscriber.task
+      yield* cells.sendTask(
         subscriber.task,
         TaskEvent.WakeQueued({
           id: wakeId(key, facts, relevant),
@@ -228,32 +247,85 @@ export const observe = (db: Index.Database, facts: PullRequestFacts, mayWake: (s
           at: now,
         }),
       )
-      queued.push(subscriber.task)
+      woke += yield* deliver(subscriber.task)
     }
 
-    return { changes: found.map((change) => change._tag), queued }
+    return { changes: found.map((change) => change._tag), woke }
   })
 
-/**
- * Delivers a task's queued wake-ups through `wake`, and takes each off the queue once it is delivered.
- *
- * A wake-up that fails stays queued for the next call. `wake` must admit the same wake-up once however often
- * it is called: a wake-up is sent again when the hub fails after sending it and before recording that.
- */
-export const deliver = <E>(db: Index.Database, task: string, wake: (wake: Wake) => Effect.Effect<void, E>) =>
-  Effect.gen(function* () {
-    const state = yield* (yield* TaskEntity.client)(task).GetState()
+  const register = Effect.fn("PullRequests.register")(function* (
+    session: SessionId,
+    ref: PullRequestRef,
+    relation: Relation,
+  ) {
+    const key = keyOf(ref)
+    const follower = yield* followerOf(session, key)
+    const task = Option.isSome(follower) ? follower.value : yield* tasks.taskOf(session)
 
-    if (isUnborn(state)) return 0
-    let delivered = 0
+    yield* cells.sendPullRequest(key, PullRequestEvent.Attached({ subscriber: { task, session, relation } }))
+    yield* cells.sendTask(task, TaskEvent.Attached({ resource: key, relation, session }))
 
-    for (const queued of state.outbox) {
-      const sent = yield* Effect.result(wake(queued))
+    // The first read gives the task something to show. A pull request GitHub does not have is not followed.
+    const facts = yield* source.read(ref).pipe(Effect.tapErrorTag("PullRequestNotFound", () => detach(task, key)))
+    yield* observe(facts)
 
-      if (Result.isFailure(sent)) continue
-      yield* sendTask(db, task, TaskEvent.WakeDelivered({ id: queued.id }))
-      delivered++
+    return { task, pullRequest: key, wakes: relation !== "context" && WakePolicy.allows(policy, session) }
+  })
+
+  const setStatus = Effect.fn("PullRequests.setStatus")(function* (
+    session: SessionId,
+    ref: PullRequestRef,
+    status: WorkStatus,
+    note: string,
+  ) {
+    const key = keyOf(ref)
+    const task = yield* followerOrFail(session, key)
+    yield* cells.sendTask(task, TaskEvent.StatusSet({ resource: key, status, note }))
+
+    return { task, pullRequest: key }
+  })
+
+  const unregister = Effect.fn("PullRequests.unregister")(function* (session: SessionId, ref: PullRequestRef) {
+    const key = keyOf(ref)
+    const task = yield* followerOrFail(session, key)
+    yield* detach(task, key)
+
+    return { task, pullRequest: key }
+  })
+
+  const list = Effect.fn("PullRequests.list")(function* (session: SessionId) {
+    const rows: Array<typeof Followed.Type> = []
+
+    for (const follower of yield* tasks.tasksOf(session)) {
+      for (const attachment of yield* attachmentsOf(follower)) {
+        rows.push({
+          pullRequest: attachment.resource,
+          task: follower,
+          relation: attachment.relation,
+          status: attachment.status,
+          note: attachment.note,
+          github: githubView(yield* cells.pullRequest(attachment.resource)),
+        })
+      }
     }
 
-    return delivered
+    return { task: yield* tasks.taskOf(session), pullRequests: rows }
   })
+
+  const deliverPending = Effect.gen(function* () {
+    let woke = 0
+
+    for (const task of yield* index.tasksWithUndelivered) woke += yield* deliver(task)
+
+    return woke
+  }).pipe(Effect.withSpan("PullRequests.deliverPending"))
+
+  const watched = Effect.map(index.pullRequests("watched"), (rows) =>
+    rows.flatMap((row) => Option.toArray(refOf(row.key))),
+  )
+
+  return Service.of({ register, setStatus, unregister, list, observe, deliverPending, watched })
+})
+
+/** The pull requests, still in need of everything they are built on. */
+export const layerWithoutDependencies = Layer.effect(Service, make)

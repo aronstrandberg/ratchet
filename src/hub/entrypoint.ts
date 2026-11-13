@@ -1,100 +1,69 @@
 import { WorkerEntrypoint } from "cloudflare:workers"
 import { Effect, Schema } from "effect"
-import { type Env, mayWake } from "../env.ts"
+import type { Env } from "../env.ts"
 import { PullRequestFacts, type PullRequestRef } from "../protocol/pull-request.ts"
-import { type Binding, SessionFact } from "../protocol/session.ts"
-import type { Wake } from "../protocol/wake.ts"
-import { runtime } from "./cluster.ts"
-import * as Facts from "./facts.ts"
+import { Binding, SessionFact } from "../protocol/session.ts"
+import { type Services, runtime } from "./cluster.ts"
 import * as Index from "./index-store.ts"
 import * as PullRequests from "./pull-requests.ts"
+import * as Tasks from "./tasks.ts"
 
 const decodeFacts = Schema.decodeEffect(Schema.Array(SessionFact))
+const encodeBindings = Schema.encodeEffect(Schema.Array(Binding))
+const decodeObservation = Schema.decodeEffect(PullRequestFacts)
 
-/** The hub's interface to the gateway and to the Worker's routes. */
+/**
+ * The hub as the gateway and the Worker's routes call it.
+ *
+ * Each method parses what it is given, runs one operation of the hub and answers in plain values. A failure
+ * rejects the call with its message.
+ */
 export class Hub extends WorkerEntrypoint<Env> {
-  /** Applies facts in order, and returns the task of each main session the facts opened. */
-  async sessionFacts(facts: ReadonlyArray<typeof SessionFact.Encoded>): Promise<ReadonlyArray<Binding>> {
-    const app = await runtime(this.env)
-    const db = Index.d1(this.env.INDEX)
+  #run<A, E>(operation: Effect.Effect<A, E, Services>): Promise<A> {
+    return runtime(this.env).then((hub) => hub.runPromise(operation))
+  }
 
-    return app.runPromise(
+  /** Applies facts about sessions in order, and returns the task of each main session the facts opened. */
+  async sessionFacts(
+    facts: ReadonlyArray<typeof SessionFact.Encoded>,
+  ): Promise<ReadonlyArray<typeof Binding.Encoded>> {
+    return this.#run(
       Effect.gen(function* () {
-        yield* Index.migrate(db)
-        const decoded = yield* decodeFacts(facts)
-        const bindings = yield* Effect.forEach(decoded, (fact) => Facts.apply(db, fact))
+        const tasks = yield* Tasks.Service
 
-        return bindings.filter((binding) => binding !== null)
+        return yield* encodeBindings(yield* tasks.observe(yield* decodeFacts(facts)))
       }).pipe(Effect.withSpan("Hub.sessionFacts", { attributes: { "ratchet.facts": facts.length } })),
     )
   }
 
-  #mayWake = (session: string): boolean => mayWake(this.env, session)
-
-  #wake = (wake: Wake) => Effect.tryPromise(() => this.env.GATEWAY.wake(wake))
-
-  /** Applies an observation of a pull request, then delivers the wake-ups it queued. */
-  async pullRequestFacts(
-    facts: typeof PullRequestFacts.Encoded,
-  ): Promise<{ readonly changes: ReadonlyArray<string>; readonly woke: number }> {
-    const app = await runtime(this.env)
-    const db = Index.d1(this.env.INDEX)
-    const mayWake = this.#mayWake
-    const wake = this.#wake
-
-    return app.runPromise(
+  /** Applies an observation of a pull request and delivers the wake-ups it leads to. */
+  async pullRequestFacts(facts: typeof PullRequestFacts.Encoded): Promise<PullRequests.Observed> {
+    return this.#run(
       Effect.gen(function* () {
-        yield* Index.migrate(db)
-        const decoded = yield* Schema.decodeEffect(PullRequestFacts)(facts)
-        const observed = yield* PullRequests.observe(db, decoded, mayWake)
-        let woke = 0
+        const pullRequests = yield* PullRequests.Service
 
-        for (const task of observed.queued) woke += yield* PullRequests.deliver(db, task, wake)
-
-        return { changes: observed.changes, woke }
+        return yield* pullRequests.observe(yield* decodeObservation(facts))
       }).pipe(Effect.withSpan("Hub.pullRequestFacts")),
     )
   }
 
   /** Tries again to deliver every wake-up that has not reached its session. */
   async deliverWakes(): Promise<number> {
-    const app = await runtime(this.env)
-    const db = Index.d1(this.env.INDEX)
-    const wake = this.#wake
-
-    return app.runPromise(
-      Effect.gen(function* () {
-        yield* Index.migrate(db)
-        let woke = 0
-
-        for (const task of yield* Index.tasksWithUndelivered(db)) woke += yield* PullRequests.deliver(db, task, wake)
-
-        return woke
-      }),
-    )
+    return this.#run(Effect.flatMap(PullRequests.Service, (pullRequests) => pullRequests.deliverPending))
   }
 
   /** The pull requests worth reading again: someone follows them and they are not merged or closed. */
   async watchedPullRequests(): Promise<ReadonlyArray<PullRequestRef>> {
-    const db = Index.d1(this.env.INDEX)
-    const rows = await Effect.runPromise(Effect.andThen(Index.migrate(db), Index.pullRequests(db, true)))
-
-    return rows.flatMap((row) => {
-      const match = /^([^/]+)\/([^#]+)#(\d+)$/.exec(row.key)
-
-      return match === null ? [] : [{ owner: match[1]!, repo: match[2]!, number: Number(match[3]) }]
-    })
+    return this.#run(Effect.flatMap(PullRequests.Service, (pullRequests) => pullRequests.watched))
   }
 
+  /** Every pull request the hub knows, the latest change first. */
   async pullRequests(): Promise<ReadonlyArray<Index.PullRequestRow>> {
-    const db = Index.d1(this.env.INDEX)
-
-    return Effect.runPromise(Effect.andThen(Index.migrate(db), Index.pullRequests(db, false)))
+    return this.#run(Effect.flatMap(Index.Service, (index) => index.pullRequests("all")))
   }
 
+  /** Every task as a forest. */
   async tree(): Promise<ReadonlyArray<Index.TaskNode>> {
-    const db = Index.d1(this.env.INDEX)
-
-    return Effect.runPromise(Effect.andThen(Index.migrate(db), Index.tree(db)))
+    return this.#run(Effect.flatMap(Index.Service, (index) => index.tree))
   }
 }

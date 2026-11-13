@@ -4,6 +4,7 @@ import { Effect, Option, Schema } from "effect"
 import { Machine } from "effect-machine"
 import { PersistenceAdapter } from "effect-machine/cluster"
 import { SqlClient } from "effect/sql"
+import { SessionId } from "../protocol/ids.ts"
 import * as Persistence from "./persistence.ts"
 import { TaskEvent, taskMachine } from "./task.ts"
 
@@ -22,7 +23,7 @@ const asState = Schema.decodeUnknownSync(Schema.toType(taskMachine.stateSchema))
 const asEvent = Schema.decodeUnknownSync(Schema.toType(taskMachine.eventSchema))
 
 const journal = (count: number) => [
-  TaskEvent.Created({ title: "first", parent: null, session: "ses_1" }),
+  TaskEvent.Created({ title: "first", parent: null, session: SessionId.make("ses_1") }),
   ...Array.from({ length: count - 1 }, (_, i) => TaskEvent.Renamed({ title: `title ${i + 2}` })),
 ]
 
