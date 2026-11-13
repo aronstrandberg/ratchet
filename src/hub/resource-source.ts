@@ -11,6 +11,17 @@ export class ResourceNotFound extends Schema.TaggedError<ResourceNotFound>()("Re
   }
 }
 
+/** The gateway has no key for the resource's own system, so it can read no resource of this kind. */
+export class ResourceNotConfigured extends Schema.TaggedError<ResourceNotConfigured>()("ResourceNotConfigured", {
+  resource: ResourceKey,
+  /** The setting that would hold the key. */
+  setting: Schema.String,
+}) {
+  override get message(): string {
+    return `${labelOfKey(this.resource)} cannot be read: ${this.setting} is not set`
+  }
+}
+
 /** A resource could not be read now. Reading it again later may work. */
 export class ResourceUnreadable extends Schema.TaggedError<ResourceUnreadable>()("ResourceUnreadable", {
   resource: ResourceKey,
@@ -24,7 +35,9 @@ export class ResourceUnreadable extends Schema.TaggedError<ResourceUnreadable>()
 /** Where the hub reads a resource's current state. The gateway reads it from the resource's own system. */
 export interface Interface {
   /** Reads a resource now. The gateway keeps reading a resource the hub watches. */
-  readonly read: (ref: ResourceRef) => Effect.Effect<ResourceFacts, ResourceNotFound | ResourceUnreadable>
+  readonly read: (
+    ref: ResourceRef,
+  ) => Effect.Effect<ResourceFacts, ResourceNotFound | ResourceNotConfigured | ResourceUnreadable>
 }
 
 /** The hub's source of observations. */

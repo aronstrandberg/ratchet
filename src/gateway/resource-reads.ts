@@ -8,6 +8,7 @@ const Reply = ReadReply.cases
 const Observed = ResourceFacts.cases
 
 const notFound = () => Effect.succeed(Reply.NotFound.make({}))
+const notConfigured = ({ setting }: { readonly setting: string }) => Effect.succeed(Reply.NotConfigured.make({ setting }))
 const unavailable = (failure: { readonly message: string }) => Effect.succeed(Reply.Unavailable.make({ message: failure.message }))
 
 /**
@@ -29,11 +30,15 @@ export const read = (
     LinearIssue: (issue) =>
       Effect.flatMap(Linear.Service, (linear) => linear.read(issue)).pipe(
         Effect.map((facts) => Reply.Read.make({ observed: Observed.LinearIssue.make({ facts }) })),
-        Effect.catchTags({ IssueNotFound: notFound, LinearUnavailable: unavailable }),
+        Effect.catchTags({ IssueNotFound: notFound, LinearUnavailable: unavailable, NotConfigured: notConfigured }),
       ),
     Incident: (incident) =>
       Effect.flatMap(IncidentIo.Service, (incidents) => incidents.read(incident)).pipe(
         Effect.map((facts) => Reply.Read.make({ observed: Observed.Incident.make({ facts }) })),
-        Effect.catchTags({ IncidentNotFound: notFound, IncidentIoUnavailable: unavailable }),
+        Effect.catchTags({
+          IncidentNotFound: notFound,
+          IncidentIoUnavailable: unavailable,
+          NotConfigured: notConfigured,
+        }),
       ),
   })
