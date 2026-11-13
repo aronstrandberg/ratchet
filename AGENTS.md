@@ -69,8 +69,15 @@ not turn a rule off, lower its severity or add a cast to pass.
 
 Every OpenCode session on this machine calls the Ratchet at
 `http://127.0.0.1:9876`. It runs from its own checkout, not this one, and
-`scripts/deploy.sh` moves it to `origin/main`. Do not start a second `celld dev`
-against the same OpenCode service: it would write to the same sessions.
+`scripts/deploy.sh` moves it to `origin/main` and restarts its unit,
+`ratchet.service`. Do not start a second `celld dev` against the same OpenCode
+service or on the same state directory: two of them write to the same sessions
+and corrupt each other's leases.
+
+A restart is not free. Every cell wakes again from celld's local store, which
+takes minutes while that store is large, and tool calls from sessions time out
+meanwhile. So deploy once for several changes, not once per change. celld's
+messages are in `~/.local/state/ratchet/celld.log`.
 
 To try a change end to end, run `scripts/scratch.sh`. It starts a Ratchet with
 empty state on port 9877 against a stand-in for OpenCode on port 9878, and reads

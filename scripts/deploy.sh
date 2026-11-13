@@ -3,7 +3,9 @@
 #
 # The service runs from its own checkout, so an edit in a working checkout never reaches it. This checkout
 # must be clean and at origin/main, and `bun run check` must pass here before the service's checkout moves.
-# celld dev reloads when the files change. When a reload fails, celld exits and its unit starts it again.
+#
+# The service does not watch its files, so the deploy restarts its unit. A restart wakes every cell again:
+# the service answers within a minute, and calls that reach a cell still asleep are slow for some minutes more.
 set -euo pipefail
 live="${RATCHET_LIVE:-${XDG_DATA_HOME:-$HOME/.local/share}/ratchet/live}"
 url="http://127.0.0.1:${RATCHET_PORT:-9876}/tree"
@@ -37,7 +39,9 @@ if ! git -C "$live" diff --quiet "$before" "$target" -- bun.lock package.json; t
   (cd "$live" && bun install --frozen-lockfile)
 fi
 
-for _ in $(seq 1 90); do
+systemctl --user restart "${RATCHET_UNIT:-ratchet.service}"
+
+for _ in $(seq 1 300); do
   if curl --silent --fail --max-time 5 --output /dev/null "$url"; then
     echo "deploy: the service is at ${target:0:7} and answers"
     exit 0
