@@ -2,6 +2,7 @@ import { Effect, Layer, Match, Option, Result, Schema } from "effect"
 import { McpProtocol, McpSchema, McpServer, Tool, Toolkit } from "effect/ai"
 import { HttpRouter } from "effect/http"
 import type { Env } from "../env.ts"
+import { causeText } from "../failure.ts"
 import { SessionId } from "../protocol/ids.ts"
 import { PullRequestRef, Relation } from "../protocol/pull-request.ts"
 import type { CellUnavailable } from "./cells.ts"
@@ -189,7 +190,11 @@ const caller = Effect.flatMap(McpSchema.McpRequestContext, (context) =>
 )
 
 /** The hub's runtime could not be built or did not run the operation. */
-class HubDown extends Schema.TaggedError<HubDown>()("HubDown", { cause: Schema.Defect() }) {}
+class HubDown extends Schema.TaggedError<HubDown>()("HubDown", { cause: Schema.Defect() }) {
+  override get message(): string {
+    return `Ratchet is not running: ${causeText(this.cause)}`
+  }
+}
 
 type ToolFailure =
   | Tasks.NoTask
@@ -214,10 +219,10 @@ const explain = Match.type<ToolFailure>().pipe(
       `GitHub has no pull request ${pullRequest}, or Ratchet cannot see it. It is not registered.`,
     PullRequestUnreadable: ({ pullRequest }) =>
       `${pullRequest} is registered, but GitHub could not be read just now. Ratchet reads it again within a minute.`,
-    SessionControlFailed: ({ operation, cause }) => `OpenCode did not ${operation}: ${String(cause)}`,
-    CellUnavailable: ({ cell }) => `Ratchet could not reach ${cell}. Try again.`,
-    IndexError: ({ operation }) => `Ratchet's index failed (${operation}). The change itself is recorded.`,
-    HubDown: ({ cause }) => `Ratchet is not running: ${String(cause)}`,
+    SessionControlFailed: (failure) => failure.message,
+    CellUnavailable: (failure) => `${failure.message}. Try again.`,
+    IndexError: (failure) => `${failure.message}. The change itself is recorded.`,
+    HubDown: (failure) => failure.message,
   }),
 )
 

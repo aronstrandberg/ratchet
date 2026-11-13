@@ -1,6 +1,7 @@
 import { WorkerEntrypoint } from "cloudflare:workers"
 import { Effect, Result, Schema } from "effect"
 import type { Env } from "../env.ts"
+import { forBinding } from "../failure.ts"
 import { SessionId, TaskId } from "../protocol/ids.ts"
 import { PullRequestRef, ReadReply } from "../protocol/pull-request.ts"
 import { Wake } from "../protocol/wake.ts"
@@ -22,12 +23,32 @@ export class Gateway extends WorkerEntrypoint<Env> {
   #run<A, E>(operation: Effect.Effect<A, E, Services>): Promise<A> {
     const gateway = runtime(this.env)
 
-    return Result.isFailure(gateway) ? Promise.reject(gateway.failure) : gateway.success.runPromise(operation)
+    return Result.isFailure(gateway)
+      ? Promise.reject(forBinding(gateway.failure))
+      : gateway.success.runPromise(operation).catch((cause: unknown) => Promise.reject(forBinding(cause)))
   }
 
   /** Makes sure the gateway listens to OpenCode, and reports the connection. */
   async watchOpenCode(): Promise<SessionSync.Status> {
     return this.env.OPENCODE_STREAM.getByName("default").ensure()
+  }
+
+  /**
+   * Starts a sign-in to the webhook proxy and returns the address to open in a browser. `origin` is where
+   * this Worker is reached, which is where the browser is sent back to.
+   */
+  async proxyLogin(origin: string): Promise<string> {
+    return this.env.PROXY_SIGN_IN.getByName("default").begin(`${origin}/gateway/proxy/callback`)
+  }
+
+  /** Finishes a sign-in to the webhook proxy with the address the browser was sent back to. */
+  async proxyCallback(callback: string): Promise<void> {
+    await this.env.PROXY_SIGN_IN.getByName("default").complete(callback)
+  }
+
+  /** Whether the gateway is signed in to the webhook proxy. */
+  async proxySignedIn(): Promise<boolean> {
+    return this.env.PROXY_SIGN_IN.getByName("default").signedIn()
   }
 
   /** Writes a session's current task into the session's metadata. */

@@ -306,6 +306,7 @@ provider. The second iteration adds the GitHub adapter.
 | Checks | oxlint with the vendored anti-slop rules, rumdl, `tsc` and the tests, run by lefthook before each commit. The standards are the skills in `.agents/skills` |
 | Structure | Each half is domain modules, application services, ports and adapters, wired as Effect layers at its composition roots. Failures are tagged errors, IDs are branded types, and secrets are redacted values. `AGENTS.md` has the table of which file is which |
 | Deploy | The service runs from its own checkout. `scripts/deploy.sh` moves it to `origin/main` after the checks pass |
+| Proxy sign-in | The gateway registers itself as an OAuth client at `lovable.dev/oauth`, and a Durable Object holds the grant and renews its token. The stream that uses it is not built |
 | Tracing | Spans over OTLP to the local collector when `OTLP_URL` is set. The collector and ClickHouse are user services in `dotfiles-lovable/nix/ratchet.nix` |
 
 Differences from the design above, found while building:

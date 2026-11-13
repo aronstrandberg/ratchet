@@ -14,6 +14,8 @@ export { GitHubPoller } from "./gateway/github-poller.ts"
 
 export { OpenCodeStream } from "./gateway/opencode-stream.ts"
 
+export { ProxySignIn } from "./gateway/proxy-sign-in.ts"
+
 export { Hub } from "./hub/entrypoint.ts"
 
 const route = async (request: Request, env: Env): Promise<Response> => {
@@ -26,6 +28,14 @@ const route = async (request: Request, env: Env): Promise<Response> => {
       return Response.json(await env.HUB.pullRequests())
     case "/gateway/opencode":
       return Response.json(await env.GATEWAY.watchOpenCode())
+    case "/gateway/proxy":
+      return Response.json({ signedIn: await env.GATEWAY.proxySignedIn() })
+    case "/gateway/proxy/login":
+      return Response.json({ open: await env.GATEWAY.proxyLogin(new URL(request.url).origin) })
+    case "/gateway/proxy/callback":
+      await env.GATEWAY.proxyCallback(request.url)
+
+      return new Response("Ratchet is signed in to the webhook proxy. You can close this page.\n")
     default:
       return new Response("not found\n", { status: 404 })
   }
@@ -38,5 +48,7 @@ const route = async (request: Request, env: Env): Promise<Response> => {
  */
 export default {
   fetch: (request: Request, env: Env): Promise<Response> =>
-    route(request, env).catch((cause: unknown) => Response.json({ error: String(cause) }, { status: 503 })),
+    route(request, env).catch((cause: unknown) =>
+      Response.json({ error: cause instanceof Error ? cause.message : String(cause) }, { status: 503 }),
+    ),
 }

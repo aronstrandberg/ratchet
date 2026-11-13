@@ -1,4 +1,5 @@
 import { Clock, Context, Effect, Layer, Ref, Schema } from "effect"
+import { causeText } from "../failure.ts"
 import { TaskId } from "../protocol/ids.ts"
 import { PullRequestKey } from "../protocol/pull-request.ts"
 import { PullRequestState, failedChecks } from "./pull-request.ts"
@@ -8,7 +9,11 @@ import { type TaskState, isUnborn } from "./task.ts"
 export class IndexError extends Schema.TaggedError<IndexError>()("IndexError", {
   operation: Schema.String,
   cause: Schema.Defect(),
-}) {}
+}) {
+  override get message(): string {
+    return `the index failed to ${this.operation}: ${causeText(this.cause)}`
+  }
+}
 
 /** A value SQLite stores in a column. */
 type Value = string | number | null

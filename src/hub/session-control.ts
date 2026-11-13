@@ -1,4 +1,5 @@
 import { Context, type Effect, Schema } from "effect"
+import { causeText } from "../failure.ts"
 import type { SessionId, TaskId } from "../protocol/ids.ts"
 import type { Wake } from "../protocol/wake.ts"
 
@@ -7,7 +8,11 @@ export class SessionControlFailed extends Schema.TaggedError<SessionControlFaile
   operation: Schema.Literals(["record task", "fork", "wake"]),
   session: Schema.String,
   cause: Schema.Defect(),
-}) {}
+}) {
+  override get message(): string {
+    return `OpenCode did not ${this.operation} for ${this.session}: ${causeText(this.cause)}`
+  }
+}
 
 /** What the hub asks OpenCode to do to a session. The gateway carries it out. */
 export interface Interface {

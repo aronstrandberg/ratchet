@@ -22,13 +22,21 @@ export const TaskView = Schema.Struct({
 export type TaskView = typeof TaskView.Type
 
 /** The hub has no task for a session: it has not seen the session yet. */
-export class NoTask extends Schema.TaggedError<NoTask>()("NoTask", { session: SessionId }) {}
+export class NoTask extends Schema.TaggedError<NoTask>()("NoTask", { session: SessionId }) {
+  override get message(): string {
+    return `the hub has no task for session ${this.session}`
+  }
+}
 
 /** A session named a task it has not worked on. */
 export class NotATaskOfSession extends Schema.TaggedError<NotATaskOfSession>()("NotATaskOfSession", {
   session: SessionId,
   task: TaskId,
-}) {}
+}) {
+  override get message(): string {
+    return `session ${this.session} has not worked on ${this.task}`
+  }
+}
 
 /** How a new task relates to the one its session leaves: below it, or beside it under the same parent. */
 export const Placement = Schema.Literals(["child", "sibling"])
