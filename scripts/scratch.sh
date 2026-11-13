@@ -5,7 +5,7 @@
 #
 #   scripts/scratch.sh [port]     Ratchet on the port (9877), the stand-in on the next one
 #
-# Stop it with Ctrl-C. The running service and its state are not touched.
+# Stop it with Ctrl-C, and start it again to try a change. The running service and its state are not touched.
 set -euo pipefail
 cd "$(dirname "$0")/.."
 port="${1:-9877}"
@@ -29,4 +29,5 @@ umask 077
 } > .dev.vars
 rm -rf .celld
 
-CELLD_ESBUILD="$PWD/node_modules/@esbuild/linux-x64/bin/esbuild" celld dev . --port "$port"
+# No file watching: this machine runs close to the kernel's limit on file watches. Start it again after a change.
+CELLD_ESBUILD="$PWD/node_modules/@esbuild/linux-x64/bin/esbuild" celld dev . --port "$port" --no-watch
