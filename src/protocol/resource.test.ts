@@ -43,5 +43,8 @@ test("a resource is read from its address in a browser and from its short name",
   expect(parseReference("https://app.incident.io/lovable/incidents/123")).toEqual(incident)
   // INC is incident.io's prefix, so it is never read as a Linear team.
   expect(parseReference("INC-123")).toEqual(incident)
+  // The key the tools answer with is read back as the resource it names.
+  expect(parseReference("linear:dx-1550")).toEqual(issue)
+  expect(parseReference("incident:123")).toEqual(incident)
   expect(parseReference("https://example.com/DX-1550")).toEqual(Option.none())
 })

@@ -70,17 +70,18 @@ const shorthand = [
   // A pull request: its address on GitHub, or owner/repo#number.
   { pattern: /^https:\/\/github\.com\/([\w.-]+)\/([\w.-]+)\/pull\/(\d+)(?:[/?#].*)?$/, kind: "PullRequest" },
   { pattern: /^([\w.-]+)\/([\w.-]+)#(\d+)$/, kind: "PullRequest" },
-  // An incident: its address on incident.io, or INC-number. `INC` is therefore never read as a Linear team.
+  // An incident: its address on incident.io, INC-number, or its key. `INC` is therefore never read as a Linear team.
   { pattern: /^https:\/\/app\.incident\.io\/[\w.-]+\/incidents\/(\d+)(?:[/?#].*)?$/, kind: "Incident" },
   { pattern: /^INC-(\d+)$/i, kind: "Incident" },
-  // A Linear issue: its address on Linear, or its identifier.
+  { pattern: /^incident:(\d+)$/, kind: "Incident" },
+  // A Linear issue: its address on Linear, its identifier, or its key.
   { pattern: /^https:\/\/linear\.app\/[\w.-]+\/issue\/([A-Za-z][A-Za-z0-9]*-\d+)(?:[/?#].*)?$/, kind: "LinearIssue" },
-  { pattern: /^([A-Za-z][A-Za-z0-9]*-\d+)$/, kind: "LinearIssue" },
+  { pattern: /^(?:linear:)?([A-Za-z][A-Za-z0-9]*-\d+)$/, kind: "LinearIssue" },
 ] as const
 
 /**
- * Reads a resource from what a person or a session would write for it: its address in a browser, or its
- * short name, such as `owner/repo#12`, `DX-1550` or `INC-123`.
+ * Reads a resource from what a person or a session would write for it: its address in a browser, its short
+ * name, such as `owner/repo#12`, `DX-1550` or `INC-123`, or the key the tools answer with.
  */
 export const parseReference = (text: string): Option.Option<ResourceRef> => {
   for (const { pattern, kind } of shorthand) {

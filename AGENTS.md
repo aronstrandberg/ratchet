@@ -79,6 +79,14 @@ takes minutes while that store is large, and tool calls from sessions time out
 meanwhile. So deploy once for several changes, not once per change. celld's
 messages are in `~/.local/state/ratchet/celld.log`.
 
+celld's local store only grows, and cells wake more slowly as it does. When the
+store is too large to wake from, or its state is damaged, start from empty
+state: `scripts/export.sh` saves the tasks and what they follow, the unit stops,
+`.celld` in the service's checkout moves aside, the unit starts with
+`WAKE_SESSIONS=` empty, `scripts/import.sh <directory>` puts the export back,
+and the unit restarts with the wake setting restored. Tasks that sessions
+started get new IDs. Open questions and wake-ups not yet delivered are lost.
+
 To try a change end to end, run `scripts/scratch.sh`. It starts a Ratchet with
 empty state on port 9877 against a stand-in for OpenCode on port 9878, and reads
 the real GitHub. The header of `scripts/fake-outside.ts` says how to add
