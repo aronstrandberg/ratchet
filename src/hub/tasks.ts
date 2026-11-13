@@ -24,6 +24,12 @@ export type TaskView = typeof TaskView.Type
 /** The hub has no task for a session: it has not seen the session yet. */
 export class NoTask extends Schema.TaggedError<NoTask>()("NoTask", { session: SessionId }) {}
 
+/** A session named a task it has not worked on. */
+export class NotATaskOfSession extends Schema.TaggedError<NotATaskOfSession>()("NotATaskOfSession", {
+  session: SessionId,
+  task: TaskId,
+}) {}
+
 /** How a new task relates to the one its session leaves: below it, or beside it under the same parent. */
 export const Placement = Schema.Literals(["child", "sibling"])
 
@@ -55,6 +61,15 @@ export interface Interface {
     title: string,
     placement: Placement,
   ) => Effect.Effect<{ readonly task: TaskView; readonly left: TaskId }, NoTask | Failure>
+  /**
+   * Gives a task the session has worked on a new title. `task` is the session's current task when it is not
+   * given.
+   */
+  readonly rename: (
+    session: SessionId,
+    title: string,
+    task: Option.Option<TaskId>,
+  ) => Effect.Effect<TaskView, NoTask | NotATaskOfSession | Failure>
   /** Forks a session into a new one that works on a child task, and prompts the fork. */
   readonly fork: (
     session: SessionId,
@@ -139,6 +154,18 @@ export const make = Effect.gen(function* () {
       task === null ? Effect.succeed(Option.none<Binding>()) : Effect.as(cells.sendTask(task, event), Option.none<Binding>()),
     )
 
+  /**
+   * Gives a session's first task the session's title.
+   *
+   * A task the session started later keeps the title it was started with.
+   */
+  const nameFirstTask = Effect.fn("Tasks.nameFirstTask")(function* (session: SessionId, title: string) {
+    const first = firstTaskOf(session)
+    const state = yield* cells.task(first)
+
+    if (!isUnborn(state) && state.title !== title) yield* cells.sendTask(first, TaskEvent.Renamed({ title }))
+  })
+
   const open = Effect.fn("Tasks.open")(function* (fact: Opened) {
     const bound = yield* boundOf(fact.session)
     const task = bound ?? firstTaskOf(fact.session)
@@ -159,9 +186,7 @@ export const make = Effect.gen(function* () {
 
     if (isUnborn(state)) return binding
 
-    if (fact.title !== null && fact.title !== state.title) {
-      yield* cells.sendTask(task, TaskEvent.Renamed({ title: fact.title }))
-    }
+    if (fact.title !== null) yield* nameFirstTask(fact.session, fact.title)
 
     if (differs(state, fact)) {
       yield* cells.sendTask(
@@ -183,7 +208,7 @@ export const make = Effect.gen(function* () {
       Opened: open,
       Started: ({ session }) => toTaskOf(session, TaskEvent.SessionStarted({ session })),
       Idle: ({ session }) => toTaskOf(session, TaskEvent.SessionIdle({ session })),
-      Renamed: ({ session, title }) => toTaskOf(session, TaskEvent.Renamed({ title })),
+      Renamed: ({ session, title }) => Effect.as(nameFirstTask(session, title), Option.none<Binding>()),
       SubagentStarted: ({ of, session }) => toTaskOf(of, TaskEvent.SubagentStarted({ of, session })),
       SubagentStopped: ({ of, session }) => toTaskOf(of, TaskEvent.SubagentStopped({ session })),
       Asked: ({ of, question }) => toTaskOf(of, TaskEvent.QuestionAsked({ session: of, question })),
@@ -245,6 +270,17 @@ export const make = Effect.gen(function* () {
     return isUnborn(state) ? yield* new NoTask({ session }) : { task: view(id, state), left: from.id }
   })
 
+  const rename = Effect.fn("Tasks.rename")(function* (session: SessionId, title: string, task: Option.Option<TaskId>) {
+    const worked = yield* tasksOf(session)
+    const id = Option.isSome(task) ? task.value : yield* taskOf(session)
+
+    if (!worked.includes(id)) return yield* new NotATaskOfSession({ session, task: id })
+
+    const state = yield* cells.sendTask(id, TaskEvent.Renamed({ title }))
+
+    return isUnborn(state) ? yield* new NoTask({ session }) : view(id, state)
+  })
+
   const declareSubagent = Effect.fn("Tasks.declareSubagent")(function* (
     session: SessionId,
     subagent: SessionId,
@@ -262,6 +298,7 @@ export const make = Effect.gen(function* () {
     tasksOf,
     current,
     start,
+    rename,
     fork: (session, title, prompt) => control.fork(session, title, prompt),
     declareSubagent,
   })
