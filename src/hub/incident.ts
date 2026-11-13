@@ -1,4 +1,4 @@
-import { Schema } from "effect"
+import { Equal, Schema } from "effect"
 import { Event, Machine, State } from "effect-machine"
 import { toEntity } from "effect-machine/cluster"
 import { TaskId } from "../protocol/ids.ts"
@@ -58,6 +58,10 @@ export const Change = Schema.TaggedUnion({
 export type Change = typeof Change.Type
 
 const isSeen = IncidentState.$is("Seen")
+
+/** Whether an observation says nothing the cell does not hold already, so that it need not be stored again. */
+export const repeats = (state: IncidentState, facts: IncidentFacts): boolean =>
+  isSeen(state) && Equal.equals(state.incident, facts)
 
 const endings: Partial<Record<IncidentCategory, Outcome>> = {
   closed: "closed",
