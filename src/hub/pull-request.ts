@@ -1,8 +1,10 @@
 import { Schema } from "effect"
 import { Event, Machine, State } from "effect-machine"
 import { toEntity } from "effect-machine/cluster"
-import { SessionId, TaskId } from "../protocol/ids.ts"
-import { Check, type Outcome, PullRequestFacts, PullRequestRef, Relation, Review, Thread } from "../protocol/pull-request.ts"
+import { TaskId } from "../protocol/ids.ts"
+import { Check, PullRequestFacts, PullRequestRef, Review, Thread } from "../protocol/pull-request.ts"
+import type { Outcome, Relation } from "../protocol/resource.ts"
+import { Subscriber, attach, detach } from "./subscribers.ts"
 
 /**
  * Where CI stands on one head commit. It moves forward only: `Running`, then `Failing` once a check has failed
@@ -24,12 +26,6 @@ export const failedChecks = (ci: Ci): ReadonlyArray<string> =>
     Failing: ({ failed }) => failed,
     Finished: ({ failed }) => failed,
   })
-
-/** A task that follows this pull request, and the session of it that attached. */
-export const Subscriber = Schema.Struct({ task: TaskId, session: SessionId, relation: Relation })
-
-/** A task that follows a pull request. */
-export type Subscriber = typeof Subscriber.Type
 
 const subscribers = { subscribers: Schema.Array(Subscriber) }
 
@@ -109,12 +105,10 @@ export const pullRequestMachine = Machine.make({
 })
   .on(any, PullRequestEvent.Observed, ({ state, event }) => project(event.facts, state.subscribers))
   .on(any, PullRequestEvent.Attached, ({ state, event }) =>
-    PullRequestState.with(state, {
-      subscribers: [...state.subscribers.filter((s) => s.task !== event.subscriber.task), event.subscriber],
-    }),
+    PullRequestState.with(state, { subscribers: attach(state.subscribers, event.subscriber) }),
   )
   .on(any, PullRequestEvent.Detached, ({ state, event }) =>
-    PullRequestState.with(state, { subscribers: state.subscribers.filter((s) => s.task !== event.task) }),
+    PullRequestState.with(state, { subscribers: detach(state.subscribers, event.task) }),
   )
 
 /** A pull request as a cell: one per pull request key. */

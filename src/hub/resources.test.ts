@@ -1,10 +1,13 @@
 import { expect, test } from "bun:test"
 import { Effect } from "effect"
 import { SessionId } from "../protocol/ids.ts"
+import type { IncidentFacts } from "../protocol/incident.ts"
+import type { LinearIssueFacts } from "../protocol/linear.ts"
 import type { Check, PullRequestFacts } from "../protocol/pull-request.ts"
+import { ResourceFacts, ResourceRef } from "../protocol/resource.ts"
 import { SessionFact, SessionOrigin } from "../protocol/session.ts"
 import * as Index from "./index-store.ts"
-import * as PullRequests from "./pull-requests.ts"
+import * as Resources from "./resources.ts"
 import * as Tasks from "./tasks.ts"
 import * as TestHub from "./test-hub.ts"
 import { WakePolicy } from "./wake-policy.ts"
@@ -12,11 +15,14 @@ import { WakePolicy } from "./wake-policy.ts"
 const run = <A, E>(program: Effect.Effect<A, E, TestHub.Services>, wake?: WakePolicy) =>
   Effect.runPromise(program.pipe(Effect.provide(TestHub.layer(wake))))
 
-const ref = { owner: "o", repo: "r", number: 1 }
+const ref = ResourceRef.cases.PullRequest.make({ owner: "o", repo: "r", number: 1 })
 const session = SessionId.make("ses_1")
 
-const facts = (over: Partial<PullRequestFacts> = {}): PullRequestFacts => ({
-  ref,
+const facts = (over: Partial<PullRequestFacts> = {}): ResourceFacts =>
+  ResourceFacts.cases.PullRequest.make({ facts: { ...pullRequest, ...over } })
+
+const pullRequest: PullRequestFacts = {
+  ref: { owner: "o", repo: "r", number: 1 },
   title: "A change",
   state: "open",
   draft: false,
@@ -28,13 +34,12 @@ const facts = (over: Partial<PullRequestFacts> = {}): PullRequestFacts => ({
   threads: [],
   reviews: [],
   viewer: "me",
-  ...over,
-})
+}
 
 const check = (name: string, state: Check["state"]): Check => ({ name, state, required: true })
 
-/** A session the hub knows, with `title` as the title of its task, and the pull request on GitHub. */
-const setUp = (title = "Speed up the build", published: PullRequestFacts = facts()) =>
+/** A session the hub knows, with `title` as the title of its task, and a resource in its own system. */
+const setUp = (title = "Speed up the build", published: ResourceFacts = facts()) =>
   Effect.gen(function* () {
     const tasks = yield* Tasks.Service
     const outside = yield* TestHub.Control
@@ -51,7 +56,7 @@ const setUp = (title = "Speed up the build", published: PullRequestFacts = facts
     ])
     yield* outside.publish(published)
 
-    return { tasks, outside, pullRequests: yield* PullRequests.Service }
+    return { tasks, outside, pullRequests: yield* Resources.Service }
   })
 
 test("a wake-up OpenCode refuses stays queued, and the next delivery sends it once", () =>
@@ -138,11 +143,12 @@ test("a pull request GitHub does not have is refused and not followed", () =>
   run(
     Effect.gen(function* () {
       const { pullRequests } = yield* setUp()
-      const missing = yield* Effect.flip(pullRequests.register(session, { ...ref, number: 2 }, "owns"))
+      const other = ResourceRef.cases.PullRequest.make({ owner: "o", repo: "r", number: 2 })
+      const missing = yield* Effect.flip(pullRequests.register(session, other, "owns"))
 
-      expect(missing._tag).toBe("PullRequestNotFound")
-      expect((yield* pullRequests.list(session)).pullRequests).toEqual([])
-      expect(yield* Effect.flatMap(Index.Service, (index) => index.pullRequests("all"))).toEqual([])
+      expect(missing._tag).toBe("ResourceNotFound")
+      expect((yield* pullRequests.list(session)).resources).toEqual([])
+      expect(yield* Effect.flatMap(Index.Service, (index) => index.resources("all"))).toEqual([])
     }),
   ))
 
@@ -160,7 +166,7 @@ test("a session that started another task still reports on the pull request of i
 
       const following = yield* pullRequests.list(session)
       expect(following.task).toBe(started.task.id)
-      expect(following.pullRequests.map(({ task, status }) => ({ task, status }))).toEqual([
+      expect(following.resources.map(({ task, status }) => ({ task, status }))).toEqual([
         { task: first.task, status: "waiting-ci" },
       ])
       // Someone still follows it and it can change, so it is read again.
@@ -178,5 +184,118 @@ test("a wake-up for an earlier task says the session now works on another one", 
 
       const [wake] = yield* outside.wakes
       expect(wake?.text).toContain('It belongs to "Speed up the build", a task you worked on before the one you work on now.')
+    }),
+  ))
+
+const issueRef = ResourceRef.cases.LinearIssue.make({ identifier: "DX-1" })
+
+const issue = (over: Partial<LinearIssueFacts> = {}): ResourceFacts =>
+  ResourceFacts.cases.LinearIssue.make({
+    facts: {
+      ref: { identifier: "DX-1" },
+      title: "Move the export",
+      url: "https://linear.app/lovable/issue/DX-1",
+      state: { name: "In Progress", type: "started" },
+      assignee: { id: "u-me", name: "me" },
+      comments: [],
+      viewer: { id: "u-me", name: "me" },
+      ...over,
+    },
+  })
+
+test("the owner of a Linear issue hears another person's comment, and not its own or a move on the board", () =>
+  run(
+    Effect.gen(function* () {
+      const { pullRequests: resources, outside } = yield* setUp("Move the export", issue())
+      yield* resources.register(session, issueRef, "owns")
+
+      const quiet = yield* resources.observe(
+        issue({ state: { name: "In Review", type: "started" }, comments: [{ id: "c1", author: "me" }] }),
+      )
+
+      expect(quiet).toEqual({ changes: ["StateChanged"], woke: 0 })
+
+      const heard = yield* resources.observe(
+        issue({
+          state: { name: "In Review", type: "started" },
+          comments: [
+            { id: "c1", author: "me" },
+            { id: "c2", author: "Jifeng" },
+          ],
+        }),
+      )
+
+      expect(heard).toEqual({ changes: ["Commented"], woke: 1 })
+      const [wake] = yield* outside.wakes
+      expect(wake?.text).toContain("Ratchet: Linear issue DX-1 changed.")
+      expect(wake?.text).toContain("- Jifeng commented.")
+    }),
+  ))
+
+test("one task at most owns a Linear issue, and a second one may still wait on it", () =>
+  run(
+    Effect.gen(function* () {
+      const { pullRequests: resources, tasks } = yield* setUp("Move the export", issue())
+      const other = SessionId.make("ses_2")
+
+      yield* tasks.observe([
+        SessionFact.cases.Opened.make({
+          session: other,
+          title: "Another",
+          origin: SessionOrigin.cases.Root.make({}),
+          running: false,
+          subagents: [],
+          questions: [],
+        }),
+      ])
+
+      const owner = yield* resources.register(session, issueRef, "owns")
+      const refused = yield* Effect.flip(resources.register(other, issueRef, "owns"))
+      expect(refused).toBeInstanceOf(Resources.AlreadyOwned)
+      expect(refused.message).toContain(owner.task)
+      // The refused task follows nothing.
+      expect((yield* resources.list(other)).resources).toEqual([])
+
+      yield* resources.register(other, issueRef, "waits_on")
+      const done = yield* resources.observe(issue({ state: { name: "Done", type: "completed" } }))
+      expect(done).toEqual({ changes: ["Completed"], woke: 2 })
+      expect((yield* resources.list(other)).resources).toMatchObject([{ label: "Linear issue DX-1", state: "Done", ended: "completed" }])
+      // It has ended, so nothing reads it again.
+      expect(yield* resources.watched).toEqual([])
+    }),
+  ))
+
+const incidentRef = ResourceRef.cases.Incident.make({ number: 7 })
+
+const incident = (over: Partial<IncidentFacts> = {}): ResourceFacts =>
+  ResourceFacts.cases.Incident.make({
+    facts: {
+      ref: { number: 7 },
+      name: "Checkout is down",
+      url: "https://app.incident.io/lovable/incidents/7",
+      status: { name: "Investigating", category: "live" },
+      severity: "Major",
+      ...over,
+    },
+  })
+
+test("a task that waits on an incident hears only its end, and the board lists the incident with its status", () =>
+  run(
+    Effect.gen(function* () {
+      const { pullRequests: resources, outside } = yield* setUp("Ship after the incident", incident())
+      yield* resources.register(session, incidentRef, "waits_on")
+      expect(yield* resources.watched).toEqual([incidentRef])
+
+      const worse = yield* resources.observe(incident({ severity: "Critical", status: { name: "Fixing", category: "live" } }))
+      expect(worse).toEqual({ changes: ["StatusChanged", "SeverityChanged"], woke: 0 })
+
+      const rows = yield* Effect.flatMap(Index.Service, (index) => index.resources("all"))
+      expect(rows).toMatchObject([
+        { key: "incident:7", kind: "incident", state: "Fixing", title: "Checkout is down", detail: { severity: "Critical" } },
+      ])
+
+      const over = yield* resources.observe(incident({ status: { name: "Closed", category: "closed" } }))
+      expect(over).toEqual({ changes: ["Ended"], woke: 1 })
+      expect((yield* outside.wakes)[0]?.text).toContain("Ratchet: incident INC-7 changed.\n- It is over: Closed.")
     }),
   ))

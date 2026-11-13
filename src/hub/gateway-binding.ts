@@ -1,8 +1,8 @@
 import { Effect, Layer, Schema } from "effect"
 import type { Gateway } from "../gateway/entrypoint.ts"
 import { SessionId } from "../protocol/ids.ts"
-import { ReadReply, keyOf } from "../protocol/pull-request.ts"
-import * as PullRequestSource from "./pull-request-source.ts"
+import { ReadReply, keyOf } from "../protocol/resource.ts"
+import * as ResourceSource from "./resource-source.ts"
 import * as SessionControl from "./session-control.ts"
 
 const decodeSession = Schema.decodeUnknownEffect(SessionId)
@@ -15,7 +15,7 @@ const decodeReply = Schema.decodeUnknownEffect(ReadReply)
  */
 export const layer = (
   gateway: Service<Gateway>,
-): Layer.Layer<SessionControl.Service | PullRequestSource.Service> => {
+): Layer.Layer<SessionControl.Service | ResourceSource.Service> => {
   const control = SessionControl.Service.of({
     recordTask: (session, task) =>
       Effect.tryPromise({
@@ -34,18 +34,18 @@ export const layer = (
       }),
   })
 
-  const source = PullRequestSource.Service.of({
+  const source = ResourceSource.Service.of({
     read: (ref) => {
-      const pullRequest = keyOf(ref)
-      const unreadable = (cause: unknown) => new PullRequestSource.PullRequestUnreadable({ pullRequest, cause })
+      const resource = keyOf(ref)
+      const unreadable = (cause: unknown) => new ResourceSource.ResourceUnreadable({ resource, cause })
 
-      return Effect.tryPromise(async () => await gateway.readPullRequest(ref)).pipe(
+      return Effect.tryPromise(async () => await gateway.readResource(ref)).pipe(
         Effect.flatMap(decodeReply),
         Effect.mapError(unreadable),
         Effect.flatMap(
           ReadReply.match({
-            Read: ({ facts }) => Effect.succeed(facts),
-            NotFound: () => Effect.fail(new PullRequestSource.PullRequestNotFound({ pullRequest })),
+            Read: ({ observed }) => Effect.succeed(observed),
+            NotFound: () => Effect.fail(new ResourceSource.ResourceNotFound({ resource })),
             Unavailable: ({ message }) => Effect.fail(unreadable(message)),
           }),
         ),
@@ -53,5 +53,5 @@ export const layer = (
     },
   })
 
-  return Layer.mergeAll(Layer.succeed(SessionControl.Service, control), Layer.succeed(PullRequestSource.Service, source))
+  return Layer.mergeAll(Layer.succeed(SessionControl.Service, control), Layer.succeed(ResourceSource.Service, source))
 }

@@ -175,12 +175,12 @@ export const make = (config: Config): Effect.Effect<Interface, never, HttpClient
       if (response.data === null || response.data === undefined || pr === null || pr === undefined) {
         // GitHub answers a missing repository or pull request with an error of this type, and no data for it.
         return errors.length === 0 || errors.some((error) => error.type === "NOT_FOUND")
-          ? yield* new PullRequestNotFound(ref)
+          ? yield* new PullRequestNotFound({ owner: ref.owner, repo: ref.repo, number: ref.number })
           : yield* new GitHubUnavailable({ operation: "read", cause: errors.map((error) => error.message).join("; ") })
       }
 
       const facts: PullRequestFacts = {
-        ref,
+        ref: { owner: ref.owner, repo: ref.repo, number: ref.number },
         title: pr.title,
         state: lower(pr.state),
         draft: pr.isDraft,

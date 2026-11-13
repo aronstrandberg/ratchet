@@ -1,8 +1,11 @@
 import { Clock, Context, Effect, Layer, Ref, Schema } from "effect"
 import { causeText } from "../failure.ts"
 import { TaskId } from "../protocol/ids.ts"
-import { PullRequestKey } from "../protocol/pull-request.ts"
-import { PullRequestState, failedChecks } from "./pull-request.ts"
+import { type Outcome, ResourceKey } from "../protocol/resource.ts"
+import * as Incident from "./incident.ts"
+import * as LinearIssue from "./linear-issue.ts"
+import { PullRequestState, failedChecks, outcomeOf } from "./pull-request.ts"
+import type { Subscriber } from "./subscribers.ts"
 import { type TaskState, isUnborn } from "./task.ts"
 
 /** The read model failed. The cells stay correct, and the next write of the same row repairs it. */
@@ -74,8 +77,11 @@ export interface TaskNode extends TaskRow {
   readonly children: ReadonlyArray<TaskNode>
 }
 
-/** What a pull request row holds beside its own columns. Only an open pull request has more than subscribers. */
-const PullRequestDetail = Schema.Struct({
+/**
+ * What a resource row holds beside its own columns, stored as JSON. Which fields are there depends on the
+ * kind of resource and on whether its own system has shown it yet.
+ */
+const ResourceDetail = Schema.Struct({
   head: Schema.optional(Schema.String),
   ci: Schema.optional(Schema.String),
   failed: Schema.optional(Schema.Array(Schema.String)),
@@ -83,33 +89,48 @@ const PullRequestDetail = Schema.Struct({
   conflicting: Schema.optional(Schema.Boolean),
   queued: Schema.optional(Schema.Boolean),
   openThreads: Schema.optional(Schema.Number),
+  /** Where a person opens the resource. */
+  url: Schema.optional(Schema.String),
+  assignee: Schema.optional(Schema.NullOr(Schema.String)),
+  severity: Schema.optional(Schema.NullOr(Schema.String)),
   subscribers: Schema.Array(Schema.Struct({ task: Schema.String, relation: Schema.String })),
 })
 
-type PullRequestDetail = typeof PullRequestDetail.Type
+type ResourceDetail = typeof ResourceDetail.Type
 
-const PullRequestDetailJson = Schema.fromJsonString(PullRequestDetail)
+const ResourceDetailJson = Schema.fromJsonString(ResourceDetail)
 
-const PullRequestRecord = Schema.Struct({
-  key: PullRequestKey,
+/** The kinds of resource the board lists. */
+export const ResourceKind = Schema.Literals(["pull_request", "linear_issue", "incident"])
+
+export type ResourceKind = typeof ResourceKind.Type
+
+const ResourceRecord = Schema.Struct({
+  key: ResourceKey,
+  kind: ResourceKind,
+  /** What the board shows: a pull request's state, an issue's workflow state, an incident's status. */
   state: Schema.String,
   title: Schema.String,
-  detail: PullRequestDetailJson,
+  detail: ResourceDetailJson,
 })
 
-/** A pull request as the board lists it. */
-export type PullRequestRow = typeof PullRequestRecord.Type
+/** A resource as the board lists it. */
+export type ResourceRow = typeof ResourceRecord.Type
 
-/** The read model of the hub: tasks and pull requests as rows the board can list and query. */
+/** The read model of the hub: tasks and resources as rows the board can list and query. */
 export interface Interface {
   /** Writes a task's row. A task that does not exist yet has no row. */
   readonly putTask: (id: TaskId, state: TaskState) => Effect.Effect<void, IndexError>
   /** Writes a pull request's row. One that nobody follows and GitHub never showed has no row. */
-  readonly putPullRequest: (key: PullRequestKey, state: PullRequestState) => Effect.Effect<void, IndexError>
+  readonly putPullRequest: (key: ResourceKey, state: PullRequestState) => Effect.Effect<void, IndexError>
+  /** Writes a Linear issue's row, under the same rule. */
+  readonly putLinearIssue: (key: ResourceKey, state: LinearIssue.LinearIssueState) => Effect.Effect<void, IndexError>
+  /** Writes an incident's row, under the same rule. */
+  readonly putIncident: (key: ResourceKey, state: Incident.IncidentState) => Effect.Effect<void, IndexError>
   /** Every task as a forest. A task whose parent is missing from the index is a root. */
   readonly tree: Effect.Effect<ReadonlyArray<TaskNode>, IndexError>
-  /** The pull requests, the latest change first. `watched` keeps those someone follows that can still change. */
-  readonly pullRequests: (which: "all" | "watched") => Effect.Effect<ReadonlyArray<PullRequestRow>, IndexError>
+  /** The resources, the latest change first. `watched` keeps those someone follows that can still change. */
+  readonly resources: (which: "all" | "watched") => Effect.Effect<ReadonlyArray<ResourceRow>, IndexError>
   /** The tasks that hold wake-ups no session has received. */
   readonly tasksWithUndelivered: Effect.Effect<ReadonlyArray<TaskId>, IndexError>
 }
@@ -120,7 +141,22 @@ export class Service extends Context.Service<Service, Interface>()("@ratchet/hub
 const tables = [
   "CREATE TABLE IF NOT EXISTS task (id TEXT PRIMARY KEY, parent TEXT, title TEXT NOT NULL, state TEXT NOT NULL, detail TEXT NOT NULL, updated_at INTEGER NOT NULL)",
   "CREATE TABLE IF NOT EXISTS pull_request (key TEXT PRIMARY KEY, state TEXT NOT NULL, title TEXT NOT NULL, detail TEXT NOT NULL, watched INTEGER NOT NULL, updated_at INTEGER NOT NULL)",
+  "CREATE TABLE IF NOT EXISTS resource (key TEXT PRIMARY KEY, kind TEXT NOT NULL, state TEXT NOT NULL, title TEXT NOT NULL, detail TEXT NOT NULL, watched INTEGER NOT NULL, updated_at INTEGER NOT NULL)",
+  // Pull requests had a table of their own before other kinds of resource existed. Its rows are copied once.
+  "INSERT OR IGNORE INTO resource (key, kind, state, title, detail, watched, updated_at) SELECT key, 'pull_request', state, title, detail, watched, updated_at FROM pull_request",
 ]
+
+/** A resource's row before it is stored. */
+interface Entry {
+  readonly kind: ResourceKind
+  readonly state: string
+  readonly title: string
+  /** Whether the resource's own system has shown it. */
+  readonly seen: boolean
+  readonly outcome: Outcome | null
+  readonly subscribers: ReadonlyArray<Subscriber>
+  readonly detail: Omit<ResourceDetail, "subscribers">
+}
 
 const failed = (operation: string) => (cause: unknown) => new IndexError({ operation, cause })
 
@@ -176,51 +212,87 @@ export const make = (database: Database): Effect.Effect<Interface> =>
       )
     })
 
-    const putPullRequest = Effect.fn("Index.putPullRequest")(function* (key: PullRequestKey, state: PullRequestState) {
-      const subscribers = state.subscribers.map(({ task, relation }) => ({ task, relation }))
-
-      const row = PullRequestState.$match<{ title: string; canChange: boolean; detail: PullRequestDetail }>(state, {
-        Unseen: () => ({ title: "", canChange: true, detail: { subscribers } }),
-        Merged: ({ title }) => ({ title, canChange: false, detail: { subscribers } }),
-        Closed: ({ title }) => ({ title, canChange: false, detail: { subscribers } }),
-        Open: (open) => ({
-          title: open.title,
-          canChange: true,
-          detail: {
-            head: open.head,
-            ci: open.ci._tag,
-            failed: failedChecks(open.ci),
-            reviewDecision: open.reviewDecision,
-            conflicting: open.conflicting,
-            queued: open.queued,
-            openThreads: open.threads.filter((thread) => !thread.resolved).length,
-            subscribers,
-          },
-        }),
-      })
-
-      // A pull request nobody follows and GitHub never showed is one that was registered by mistake.
-      if (subscribers.length === 0 && row.title === "" && row.canChange) {
-        return yield* run("forget pull request", () => database.run("DELETE FROM pull_request WHERE key = ?1", [key]))
+    const putResource = Effect.fn("Index.putResource")(function* (key: ResourceKey, entry: Entry) {
+      // A resource nobody follows and its own system never showed is one that was registered by mistake.
+      if (entry.subscribers.length === 0 && !entry.seen) {
+        return yield* run("forget resource", () => database.run("DELETE FROM resource WHERE key = ?1", [key]))
       }
 
-      // A pull request is worth reading again while someone follows it and it can still change.
-      const watched = subscribers.length > 0 && row.canChange ? 1 : 0
+      const detail = yield* Schema.encodeEffect(ResourceDetailJson)({
+        ...entry.detail,
+        subscribers: entry.subscribers.map(({ task, relation }) => ({ task, relation })),
+      }).pipe(Effect.mapError(failed("put resource")))
 
-      const detail = yield* Schema.encodeEffect(PullRequestDetailJson)(row.detail).pipe(
-        Effect.mapError(failed("put pull request")),
-      )
-
+      // A resource is worth reading again while someone follows it and it can still change.
+      const watched = entry.subscribers.length > 0 && entry.outcome === null ? 1 : 0
       const now = yield* Clock.currentTimeMillis
-      yield* run("put pull request", () =>
+      yield* run("put resource", () =>
         database.run(
-          `INSERT INTO pull_request (key, state, title, detail, watched, updated_at) VALUES (?1, ?2, ?3, ?4, ?5, ?6)
-           ON CONFLICT (key) DO UPDATE SET state = excluded.state, title = excluded.title, detail = excluded.detail,
-             watched = excluded.watched, updated_at = excluded.updated_at`,
-          [key, state._tag, row.title, detail, watched, now],
+          `INSERT INTO resource (key, kind, state, title, detail, watched, updated_at) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)
+           ON CONFLICT (key) DO UPDATE SET kind = excluded.kind, state = excluded.state, title = excluded.title,
+             detail = excluded.detail, watched = excluded.watched, updated_at = excluded.updated_at`,
+          [key, entry.kind, entry.state, entry.title, detail, watched, now],
         ),
       )
     })
+
+    const putPullRequest = (key: ResourceKey, state: PullRequestState) =>
+      putResource(key, {
+        kind: "pull_request",
+        state: state._tag,
+        subscribers: state.subscribers,
+        outcome: outcomeOf(state),
+        ...PullRequestState.$match<Pick<Entry, "title" | "seen" | "detail">>(state, {
+          Unseen: () => ({ title: "", seen: false, detail: {} }),
+          Merged: ({ title }) => ({ title, seen: true, detail: {} }),
+          Closed: ({ title }) => ({ title, seen: true, detail: {} }),
+          Open: (open) => ({
+            title: open.title,
+            seen: true,
+            detail: {
+              head: open.head,
+              ci: open.ci._tag,
+              failed: failedChecks(open.ci),
+              reviewDecision: open.reviewDecision,
+              conflicting: open.conflicting,
+              queued: open.queued,
+              openThreads: open.threads.filter((thread) => !thread.resolved).length,
+            },
+          }),
+        }),
+      })
+
+    const putLinearIssue = (key: ResourceKey, state: LinearIssue.LinearIssueState) =>
+      putResource(key, {
+        kind: "linear_issue",
+        subscribers: state.subscribers,
+        outcome: LinearIssue.outcomeOf(state),
+        ...LinearIssue.LinearIssueState.$match<Pick<Entry, "state" | "title" | "seen" | "detail">>(state, {
+          Unseen: () => ({ state: "Unseen", title: "", seen: false, detail: {} }),
+          Seen: ({ issue }) => ({
+            state: issue.state.name,
+            title: issue.title,
+            seen: true,
+            detail: { url: issue.url, assignee: issue.assignee?.name ?? null },
+          }),
+        }),
+      })
+
+    const putIncident = (key: ResourceKey, state: Incident.IncidentState) =>
+      putResource(key, {
+        kind: "incident",
+        subscribers: state.subscribers,
+        outcome: Incident.outcomeOf(state),
+        ...Incident.IncidentState.$match<Pick<Entry, "state" | "title" | "seen" | "detail">>(state, {
+          Unseen: () => ({ state: "Unseen", title: "", seen: false, detail: {} }),
+          Seen: ({ incident }) => ({
+            state: incident.status.name,
+            title: incident.name,
+            seen: true,
+            detail: { url: incident.url, severity: incident.severity },
+          }),
+        }),
+      })
 
     const tree = run("tree", () =>
       database.all("SELECT id, parent, title, state, detail FROM task ORDER BY updated_at DESC"),
@@ -248,17 +320,17 @@ export const make = (database: Database): Effect.Effect<Interface> =>
       Effect.withSpan("Index.tree"),
     )
 
-    const pullRequests = Effect.fn("Index.pullRequests")(function* (which: "all" | "watched") {
-      const rows = yield* run("pull requests", () =>
+    const resources = Effect.fn("Index.resources")(function* (which: "all" | "watched") {
+      const rows = yield* run("resources", () =>
         database.all(
           which === "watched"
-            ? "SELECT key, state, title, detail FROM pull_request WHERE watched = 1 ORDER BY key"
-            : "SELECT key, state, title, detail FROM pull_request ORDER BY updated_at DESC",
+            ? "SELECT key, kind, state, title, detail FROM resource WHERE watched = 1 ORDER BY key"
+            : "SELECT key, kind, state, title, detail FROM resource ORDER BY updated_at DESC",
         ),
       )
 
-      return yield* Schema.decodeUnknownEffect(Schema.Array(PullRequestRecord))(rows).pipe(
-        Effect.mapError(failed("pull requests")),
+      return yield* Schema.decodeUnknownEffect(Schema.Array(ResourceRecord))(rows).pipe(
+        Effect.mapError(failed("resources")),
       )
     })
 
@@ -274,7 +346,15 @@ export const make = (database: Database): Effect.Effect<Interface> =>
       Effect.withSpan("Index.tasksWithUndelivered"),
     )
 
-    return Service.of({ putTask, putPullRequest, tree, pullRequests, tasksWithUndelivered })
+    return Service.of({
+      putTask,
+      putPullRequest,
+      putLinearIssue,
+      putIncident,
+      tree,
+      resources,
+      tasksWithUndelivered,
+    })
   })
 
 /** The read model on a database. */

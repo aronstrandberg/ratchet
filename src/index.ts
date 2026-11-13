@@ -24,8 +24,10 @@ const route = async (request: Request, env: Env): Promise<Response> => {
       return Response.json(await env.HUB.tree())
     case "/mcp":
       return Mcp.handle(env, request)
+    case "/resources":
+      return Response.json(await env.HUB.resources())
     case "/prs":
-      return Response.json(await env.HUB.pullRequests())
+      return Response.json((await env.HUB.resources()).filter((row) => row.kind === "pull_request"))
     case "/gateway/opencode":
       return Response.json(await env.GATEWAY.watchOpenCode())
     case "/gateway/proxy":

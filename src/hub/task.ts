@@ -2,7 +2,7 @@ import { Effect, Schema } from "effect"
 import { Event, Machine, State } from "effect-machine"
 import { toEntity } from "effect-machine/cluster"
 import { SessionId, TaskId } from "../protocol/ids.ts"
-import { Outcome, PullRequestKey, Relation, WorkStatus } from "../protocol/pull-request.ts"
+import { Outcome, Relation, ResourceKey, WorkStatus } from "../protocol/resource.ts"
 import { Question } from "../protocol/session.ts"
 import { Wake } from "../protocol/wake.ts"
 
@@ -22,7 +22,7 @@ const OpenQuestion = Schema.Struct({ ...Question.fields, session: SessionId })
  * Once the resource has ended, `status` is history: it no longer says who has to act.
  */
 const Attachment = Schema.Struct({
-  resource: PullRequestKey,
+  resource: ResourceKey,
   relation: Relation,
   session: SessionId,
   status: WorkStatus,
@@ -100,11 +100,11 @@ export const TaskEvent = Event({
   SubagentDeclared: { session: SessionId, kind: SubagentKind },
   QuestionAsked: { session: SessionId, question: Question },
   QuestionAnswered: { id: Schema.String },
-  Attached: { resource: PullRequestKey, relation: Relation, session: SessionId },
-  Detached: { resource: PullRequestKey },
+  Attached: { resource: ResourceKey, relation: Relation, session: SessionId },
+  Detached: { resource: ResourceKey },
   /** The attaching session says where its work on a resource stands. */
-  StatusSet: { resource: PullRequestKey, status: WorkStatus, note: Schema.String },
-  ResourceEnded: { resource: PullRequestKey, outcome: Outcome },
+  StatusSet: { resource: ResourceKey, status: WorkStatus, note: Schema.String },
+  ResourceEnded: { resource: ResourceKey, outcome: Outcome },
   WakeQueued: {
     id: Schema.String,
     session: SessionId,

@@ -3,13 +3,15 @@ import { Context, Effect, Layer, Ref } from "effect"
 import { TestRunner } from "effect/cluster"
 import { EntityMachine } from "effect-machine/cluster"
 import { SessionId, type TaskId } from "../protocol/ids.ts"
-import { type PullRequestFacts, type PullRequestKey, keyOf } from "../protocol/pull-request.ts"
+import { type ResourceFacts, type ResourceKey, keyOf, subjectOf } from "../protocol/resource.ts"
 import type { Wake } from "../protocol/wake.ts"
 import * as Cells from "./cells.ts"
+import { IncidentEntity, incidentMachine } from "./incident.ts"
 import * as Index from "./index-store.ts"
-import * as PullRequestSource from "./pull-request-source.ts"
+import { LinearIssueEntity, linearIssueMachine } from "./linear-issue.ts"
 import { PullRequestEntity, pullRequestMachine } from "./pull-request.ts"
-import * as PullRequests from "./pull-requests.ts"
+import * as ResourceSource from "./resource-source.ts"
+import * as Resources from "./resources.ts"
 import * as SessionControl from "./session-control.ts"
 import { SessionEntity, sessionMachine } from "./session.ts"
 import { TaskEntity, taskMachine } from "./task.ts"
@@ -35,8 +37,8 @@ const sqlite = (): Index.Database => {
 
 /** What a test sets up outside the hub, and what it reads back of what the hub did there. */
 export interface Outside {
-  /** Puts a pull request on GitHub, or replaces what GitHub holds for it. */
-  readonly publish: (facts: PullRequestFacts) => Effect.Effect<void>
+  /** Puts a resource into its own system, or replaces what that system holds for it. */
+  readonly publish: (observed: ResourceFacts) => Effect.Effect<void>
   /** Makes OpenCode refuse wake-ups, or take them again. */
   readonly refuseWakes: (refuse: boolean) => Effect.Effect<void>
   /** The wake-ups OpenCode took, in order. */
@@ -45,12 +47,12 @@ export interface Outside {
   readonly recorded: Effect.Effect<ReadonlyArray<{ readonly session: SessionId; readonly task: TaskId }>>
 }
 
-/** The test's hold on GitHub and OpenCode. */
+/** The test's hold on OpenCode and on the systems resources live in. */
 export class Control extends Context.Service<Control, Outside>()("@ratchet/hub/TestControl") {}
 
 const outside = Layer.unwrap(
   Effect.gen(function* () {
-    const github = yield* Ref.make(new Map<PullRequestKey, PullRequestFacts>())
+    const systems = yield* Ref.make(new Map<ResourceKey, ResourceFacts>())
     const refusing = yield* Ref.make(false)
     const wakes = yield* Ref.make<ReadonlyArray<Wake>>([])
     const recorded = yield* Ref.make<ReadonlyArray<{ readonly session: SessionId; readonly task: TaskId }>>([])
@@ -69,24 +71,24 @@ const outside = Layer.unwrap(
         ),
     })
 
-    const source = PullRequestSource.Service.of({
+    const source = ResourceSource.Service.of({
       read: (ref) =>
-        Effect.flatMap(Ref.get(github), (held) => {
-          const facts = held.get(keyOf(ref))
+        Effect.flatMap(Ref.get(systems), (held) => {
+          const observed = held.get(keyOf(ref))
 
-          return facts === undefined
-            ? Effect.fail(new PullRequestSource.PullRequestNotFound({ pullRequest: keyOf(ref) }))
-            : Effect.succeed(facts)
+          return observed === undefined
+            ? Effect.fail(new ResourceSource.ResourceNotFound({ resource: keyOf(ref) }))
+            : Effect.succeed(observed)
         }),
     })
 
     return Layer.mergeAll(
       Layer.succeed(SessionControl.Service, control),
-      Layer.succeed(PullRequestSource.Service, source),
+      Layer.succeed(ResourceSource.Service, source),
       Layer.succeed(
         Control,
         Control.of({
-          publish: (facts) => Ref.update(github, (held) => new Map(held).set(keyOf(facts.ref), facts)),
+          publish: (observed) => Ref.update(systems, (held) => new Map(held).set(keyOf(subjectOf(observed)), observed)),
           refuseWakes: (refuse) => Ref.set(refusing, refuse),
           wakes: Ref.get(wakes),
           recorded: Ref.get(recorded),
@@ -100,14 +102,16 @@ const cells = Layer.mergeAll(
   EntityMachine.layer(TaskEntity, taskMachine),
   EntityMachine.layer(SessionEntity, sessionMachine),
   EntityMachine.layer(PullRequestEntity, pullRequestMachine),
+  EntityMachine.layer(LinearIssueEntity, linearIssueMachine),
+  EntityMachine.layer(IncidentEntity, incidentMachine),
 ).pipe(Layer.provideMerge(TestRunner.layer))
 
 /**
  * The hub as it runs in production, except for what is outside it: the cells run in memory, the index on
- * SQLite in memory, and GitHub and OpenCode are what `Control` makes them.
+ * SQLite in memory, and OpenCode, GitHub, Linear and incident.io are what `Control` makes them.
  */
 export const layer = (wake: WakePolicy.WakePolicy = WakePolicy.WakePolicy.cases.Everybody.make({})) =>
-  PullRequests.layerWithoutDependencies.pipe(
+  Resources.layerWithoutDependencies.pipe(
     Layer.provideMerge(Tasks.layerWithoutDependencies),
     Layer.provideMerge(Cells.layerWithoutDependencies),
     Layer.provideMerge(Layer.mergeAll(Index.layer(sqlite()), outside, Layer.succeed(WakePolicy.Service, wake))),

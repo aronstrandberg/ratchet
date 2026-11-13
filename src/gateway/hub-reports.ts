@@ -1,6 +1,6 @@
 import { Context, type Effect, Schema } from "effect"
 import { causeText } from "../failure.ts"
-import type { PullRequestFacts, PullRequestRef } from "../protocol/pull-request.ts"
+import type { ResourceFacts, ResourceRef } from "../protocol/resource.ts"
 import type { Binding, SessionFact } from "../protocol/session.ts"
 
 /** The hub did not take a report, or its answer could not be read. */
@@ -17,10 +17,10 @@ export class HubUnavailable extends Schema.TaggedError<HubUnavailable>()("HubUna
 export interface Interface {
   /** Reports facts about sessions in order. The hub answers with the task of each main session they opened. */
   readonly sessionFacts: (facts: ReadonlyArray<SessionFact>) => Effect.Effect<ReadonlyArray<Binding>, HubUnavailable>
-  /** Reports an observation of a pull request. */
-  readonly pullRequestFacts: (facts: PullRequestFacts) => Effect.Effect<void, HubUnavailable>
-  /** The pull requests the hub wants read again. */
-  readonly watchedPullRequests: Effect.Effect<ReadonlyArray<PullRequestRef>, HubUnavailable>
+  /** Reports an observation of a resource. */
+  readonly resourceFacts: (observed: ResourceFacts) => Effect.Effect<void, HubUnavailable>
+  /** The resources the hub wants read again. */
+  readonly watchedResources: Effect.Effect<ReadonlyArray<ResourceRef>, HubUnavailable>
   /** Asks the hub to try its undelivered wake-ups again. */
   readonly deliverWakes: Effect.Effect<void, HubUnavailable>
 }
