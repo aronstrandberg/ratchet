@@ -62,6 +62,21 @@ const TaskStart = Tool.make("task_start", {
   dependencies: [McpSchema.McpRequestContext],
 })
 
+const TaskRename = Tool.make("task_rename", {
+  description:
+    "Give a task a new title, as it should read on a board. Without task, it renames the task this session works on now.",
+  parameters: Schema.Struct({
+    title: Schema.String.annotate({ description: "The new title." }),
+    task: Schema.optional(Tasks.TaskView.fields.id).annotate({
+      description: "A task this session worked on before, by its ID from pr_list or task_start. Leave it out for the current task.",
+    }),
+  }),
+  success: Tasks.TaskView,
+  failure: Failure,
+  failureMode: "return",
+  dependencies: [McpSchema.McpRequestContext],
+})
+
 const TaskFork = Tool.make("task_fork", {
   description:
     "Fork this session into a new session with the same history, as a child task, and prompt the fork. Use it when a significant piece of work can be done separately from what this session does.",
@@ -153,6 +168,7 @@ const PrUnregister = Tool.make("pr_unregister", {
 const SessionTools = Toolkit.make(
   TaskCurrent,
   TaskStart,
+  TaskRename,
   TaskFork,
   SubagentDeclare,
   PrRegister,
@@ -177,6 +193,7 @@ class HubDown extends Schema.TaggedError<HubDown>()("HubDown", { cause: Schema.D
 
 type ToolFailure =
   | Tasks.NoTask
+  | Tasks.NotATaskOfSession
   | PullRequests.NotRegistered
   | PullRequestNotFound
   | PullRequestUnreadable
@@ -190,6 +207,7 @@ const explain = Match.type<ToolFailure>().pipe(
   Match.tagsExhaustive({
     NoTask: ({ session }) =>
       `Ratchet has no task for session ${session} yet. It learns about a session within seconds of its first message.`,
+    NotATaskOfSession: ({ task }) => `This session has not worked on ${task}, so it cannot rename it.`,
     NotRegistered: ({ pullRequest }) =>
       `${pullRequest} is not registered on a task of this session. Call pr_register first.`,
     PullRequestNotFound: ({ pullRequest }) =>
@@ -225,6 +243,8 @@ const handlers = (env: Env) => {
     SessionTools.of({
       task_current: () => tasks((service, session) => service.current(session)),
       task_start: ({ title, relation }) => tasks((service, session) => service.start(session, title, relation)),
+      task_rename: ({ title, task }) =>
+        tasks((service, session) => service.rename(session, title, Option.fromUndefinedOr(task))),
       task_fork: ({ title, prompt }) =>
         tasks((service, session) => Effect.map(service.fork(session, title, prompt), (fork) => ({ session: fork }))),
       subagent_declare: ({ session: subagent, kind }) =>

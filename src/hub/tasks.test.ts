@@ -1,5 +1,5 @@
 import { expect, test } from "bun:test"
-import { Effect } from "effect"
+import { Effect, Option } from "effect"
 import { SessionId } from "../protocol/ids.ts"
 import { SessionFact, SessionOrigin } from "../protocol/session.ts"
 import * as Index from "./index-store.ts"
@@ -86,5 +86,27 @@ test("a fork gets a child task of the task its origin works on", () =>
       yield* tasks.observe([opened(fork, { origin: SessionOrigin.cases.Fork.make({ of: runner }) })])
 
       expect((yield* tasks.current(fork)).parent).toBe(origin?.task ?? null)
+    }),
+  ))
+
+test("a task a session started keeps its title when the session is seen again, and renames by ID", () =>
+  run(
+    Effect.gen(function* () {
+      const tasks = yield* Tasks.Service
+
+      yield* tasks.observe([opened(runner)])
+      const started = yield* tasks.start(runner, "Storage roller traces", "child")
+
+      // A reconnect reports the session again, with a new title. The title names the session's first task.
+      yield* tasks.observe([opened(runner, { title: "Fix the runner, again" })])
+      expect((yield* tasks.current(runner)).title).toBe("Storage roller traces")
+
+      const first = yield* tasks.rename(runner, "Runner fixes", Option.some(started.left))
+      expect(first).toMatchObject({ id: started.left, title: "Runner fixes" })
+
+      const other = yield* tasks.observe([opened(watcher)])
+      const refused = yield* Effect.flip(tasks.rename(watcher, "Not mine", Option.some(started.task.id)))
+      expect(other).toHaveLength(1)
+      expect(refused._tag).toBe("NotATaskOfSession")
     }),
   ))
