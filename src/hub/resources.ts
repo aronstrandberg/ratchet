@@ -266,7 +266,12 @@ export const make = Effect.gen(function* () {
     })
   }
 
-  /** Hands an observation to its resource's cell and says what it changed. */
+  /**
+   * Hands an observation to its resource's cell and says what it changed.
+   *
+   * An observation that repeats what the cell holds is not handed over: the cell would store it, and the
+   * gateway reads every followed resource once a minute.
+   */
   const apply = (observed: ResourceFacts): Effect.Effect<Applied, Failure> => {
     const key = keyOf(subjectOf(observed))
 
@@ -274,6 +279,11 @@ export const make = Effect.gen(function* () {
       PullRequest: ({ facts }) =>
         Effect.gen(function* () {
           const before = yield* cells.pullRequest(key)
+
+          if (PullRequest.repeats(before, facts)) {
+            return { standing: pullRequestStanding(before), version: "", notices: [] }
+          }
+
           const after = yield* cells.sendPullRequest(key, PullRequest.PullRequestEvent.Observed({ facts }))
 
           return {
@@ -289,6 +299,11 @@ export const make = Effect.gen(function* () {
       LinearIssue: ({ facts }) =>
         Effect.gen(function* () {
           const before = yield* cells.linearIssue(key)
+
+          if (LinearIssue.repeats(before, facts)) {
+            return { standing: linearIssueStanding(before), version: "", notices: [] }
+          }
+
           const after = yield* cells.sendLinearIssue(key, LinearIssue.LinearIssueEvent.Observed({ facts }))
 
           return {
@@ -304,6 +319,9 @@ export const make = Effect.gen(function* () {
       Incident: ({ facts }) =>
         Effect.gen(function* () {
           const before = yield* cells.incident(key)
+
+          if (Incident.repeats(before, facts)) return { standing: incidentStanding(before), version: "", notices: [] }
+
           const after = yield* cells.sendIncident(key, Incident.IncidentEvent.Observed({ facts }))
 
           return {

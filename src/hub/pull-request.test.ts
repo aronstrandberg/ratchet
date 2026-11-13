@@ -1,8 +1,9 @@
 import { expect, test } from "bun:test"
 import { Effect } from "effect"
 import { Machine } from "effect-machine"
+import { SessionId, TaskId } from "../protocol/ids.ts"
 import type { Check, PullRequestFacts } from "../protocol/pull-request.ts"
-import { PullRequestEvent, PullRequestState, changes, pullRequestMachine } from "./pull-request.ts"
+import { PullRequestEvent, PullRequestState, changes, pullRequestMachine, repeats } from "./pull-request.ts"
 
 const facts = (over: Partial<PullRequestFacts> = {}): PullRequestFacts => ({
   ref: { owner: "o", repo: "r", number: 1 },
@@ -99,4 +100,22 @@ test("leaving the merge queue without merging is reported, and merging is report
   )
 
   expect(seen).toEqual([[], ["Queued"], ["Dequeued"], ["Queued"], ["Merged"], []])
+})
+
+test("a read that repeats the one before is recognised, and a read that differs in one check is not", async () => {
+  const seen = facts({ checks: [check("a", "pending")], reviews: [{ id: "r1", author: "reviewer", state: "approved" }] })
+
+  const state = await Effect.runPromise(
+    Machine.replay(pullRequestMachine, [
+      PullRequestEvent.Attached({
+        subscriber: { task: TaskId.make("tsk_1"), session: SessionId.make("ses_1"), relation: "owns" },
+      }),
+      PullRequestEvent.Observed({ facts: seen }),
+    ]),
+  )
+
+  // The same read again, as a fresh value and not the same object.
+  expect(repeats(state, facts({ checks: [check("a", "pending")], reviews: [{ id: "r1", author: "reviewer", state: "approved" }] }))).toBe(true)
+  expect(repeats(state, { ...seen, checks: [check("a", "success")] })).toBe(false)
+  expect(repeats(PullRequestState.Unseen({ subscribers: [] }), seen)).toBe(false)
 })

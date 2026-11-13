@@ -1,4 +1,4 @@
-import { Schema } from "effect"
+import { Equal, Schema } from "effect"
 import { Event, Machine, State } from "effect-machine"
 import { toEntity } from "effect-machine/cluster"
 import { TaskId } from "../protocol/ids.ts"
@@ -94,6 +94,15 @@ const project = (facts: PullRequestFacts, subscribers: ReadonlyArray<Subscriber>
     subscribers,
   })
 }
+
+/**
+ * Whether an observation says nothing the cell does not hold already.
+ *
+ * The gateway reads a followed pull request every minute, and most reads repeat the one before. A repeat is
+ * not sent to the cell, because the cell would store it.
+ */
+export const repeats = (state: PullRequestState, facts: PullRequestFacts): boolean =>
+  Equal.equals(state, project(facts, state.subscribers))
 
 const any = [PullRequestState.Unseen, PullRequestState.Open, PullRequestState.Merged, PullRequestState.Closed] as const
 
