@@ -109,7 +109,12 @@ export interface Interface {
     relation: Relation,
   ) => Effect.Effect<
     Registration & { readonly wakes: boolean },
-    Tasks.NoTask | AlreadyOwned | ResourceSource.ResourceNotFound | ResourceSource.ResourceUnreadable | Failure
+    | Tasks.NoTask
+    | AlreadyOwned
+    | ResourceSource.ResourceNotFound
+    | ResourceSource.ResourceNotConfigured
+    | ResourceSource.ResourceUnreadable
+    | Failure
   >
   /** Records what the session says about its work on a resource one of its tasks follows. */
   readonly setStatus: (
@@ -417,8 +422,13 @@ export const make = Effect.gen(function* () {
 
     yield* cells.sendTask(task, TaskEvent.Attached({ resource: key, relation, session }))
 
-    // The first read gives the task something to show. A resource its own system does not have is not followed.
-    const observed = yield* source.read(ref).pipe(Effect.tapErrorTag("ResourceNotFound", () => detach(task, ref)))
+    // The first read gives the task something to show. A resource that its own system does not have, or that
+    // the gateway has no key to read, is not followed: no later read would go better.
+    const observed = yield* source.read(ref).pipe(
+      Effect.tapErrorTag("ResourceNotFound", () => detach(task, ref)),
+      Effect.tapErrorTag("ResourceNotConfigured", () => detach(task, ref)),
+    )
+
     yield* observe(observed)
 
     return { task, resource: key, wakes: relation !== "context" && WakePolicy.allows(policy, session) }

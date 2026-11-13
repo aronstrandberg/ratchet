@@ -30,6 +30,16 @@ const outside = (answers: Answers) => {
   ).pipe(Layer.provide(http))
 }
 
+test("a system the gateway has no key for is answered as not configured, with the setting to fill in", async () => {
+  const reply = await Effect.runPromise(
+    ResourceReads.read(issue).pipe(
+      Effect.provide(Layer.mergeAll(outside({}), Linear.layerNotConfigured, IncidentIo.layerNotConfigured)),
+    ),
+  )
+
+  expect(reply).toEqual(ReadReply.cases.NotConfigured.make({ setting: "LINEAR_API_KEY" }))
+})
+
 const read = (ref: ResourceRef, answers: Answers) =>
   Effect.runPromise(ResourceReads.read(ref).pipe(Effect.provide(outside(answers))))
 

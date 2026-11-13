@@ -2,6 +2,7 @@ import { Context, Effect, Layer, Redacted, Schema } from "effect"
 import { FetchHttpClient, HttpClient, HttpClientRequest, HttpClientResponse } from "effect/http"
 import { causeText } from "../failure.ts"
 import type { LinearIssueFacts, LinearIssueRef } from "../protocol/linear.ts"
+import { NotConfigured } from "./not-configured.ts"
 
 /** Linear has no issue under this identifier, or the key cannot see it. */
 export class IssueNotFound extends Schema.TaggedError<IssueNotFound>()("IssueNotFound", {
@@ -31,7 +32,9 @@ export interface Config {
 /** Linear's issues, as the gateway reads them. */
 export interface Interface {
   /** Reads an issue's current state in one GraphQL call, without its description or any comment text. */
-  readonly read: (ref: LinearIssueRef) => Effect.Effect<LinearIssueFacts, IssueNotFound | LinearUnavailable>
+  readonly read: (
+    ref: LinearIssueRef,
+  ) => Effect.Effect<LinearIssueFacts, IssueNotFound | LinearUnavailable | NotConfigured>
 }
 
 /** The gateway's connection to Linear. */
@@ -154,6 +157,6 @@ export const layer = (config: Config): Layer.Layer<Service> =>
 export const layerNotConfigured: Layer.Layer<Service> = Layer.succeed(
   Service,
   Service.of({
-    read: () => Effect.fail(new LinearUnavailable({ operation: "read", cause: "LINEAR_API_KEY is not set" })),
+    read: () => Effect.fail(new NotConfigured({ setting: "LINEAR_API_KEY" })),
   }),
 )

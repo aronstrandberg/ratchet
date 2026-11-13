@@ -9,7 +9,7 @@ import { Relation, ResourceRef, parseReference } from "../protocol/resource.ts"
 import type { CellUnavailable } from "./cells.ts"
 import { type Services, runtime } from "./cluster.ts"
 import type { IndexError } from "./index-store.ts"
-import type { ResourceNotFound, ResourceUnreadable } from "./resource-source.ts"
+import type { ResourceNotConfigured, ResourceNotFound, ResourceUnreadable } from "./resource-source.ts"
 import * as Resources from "./resources.ts"
 import type { SessionControlFailed } from "./session-control.ts"
 import { SubagentKind } from "./task.ts"
@@ -277,6 +277,7 @@ type ToolFailure =
   | Resources.AlreadyOwned
   | UnknownReference
   | ResourceNotFound
+  | ResourceNotConfigured
   | ResourceUnreadable
   | SessionControlFailed
   | CellUnavailable
@@ -295,6 +296,8 @@ const explain = Match.type<ToolFailure>().pipe(
     UnknownReference: (failure) =>
       `${failure.message}. Give a pull request, a Linear issue or an incident by its address or its short name, such as owner/repo#12, DX-1550 or INC-123.`,
     ResourceNotFound: (failure) => `${failure.message}. It is not registered.`,
+    ResourceNotConfigured: (failure) =>
+      `${failure.message} in ~/.config/ratchet/secrets.env, so Ratchet cannot follow this kind of resource yet. It is not registered. Tell the user.`,
     ResourceUnreadable: (failure) => `It is registered, but ${failure.message}. Ratchet reads it again within a minute.`,
     SessionControlFailed: (failure) => failure.message,
     CellUnavailable: (failure) => `${failure.message}. Try again.`,

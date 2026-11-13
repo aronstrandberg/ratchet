@@ -2,6 +2,7 @@ import { Context, Effect, Layer, Redacted, Schema } from "effect"
 import { FetchHttpClient, HttpClient, HttpClientRequest, HttpClientResponse } from "effect/http"
 import { causeText } from "../failure.ts"
 import { IncidentCategory, type IncidentFacts, type IncidentRef } from "../protocol/incident.ts"
+import { NotConfigured } from "./not-configured.ts"
 
 /** incident.io has no incident under this number, or the key cannot see it. */
 export class IncidentNotFound extends Schema.TaggedError<IncidentNotFound>()("IncidentNotFound", {
@@ -31,7 +32,9 @@ export interface Config {
 /** incident.io's incidents, as the gateway reads them. */
 export interface Interface {
   /** Reads an incident's current state, without its summary or updates. */
-  readonly read: (ref: IncidentRef) => Effect.Effect<IncidentFacts, IncidentNotFound | IncidentIoUnavailable>
+  readonly read: (
+    ref: IncidentRef,
+  ) => Effect.Effect<IncidentFacts, IncidentNotFound | IncidentIoUnavailable | NotConfigured>
 }
 
 /** The gateway's connection to incident.io. */
@@ -94,6 +97,6 @@ export const layer = (config: Config): Layer.Layer<Service> =>
 export const layerNotConfigured: Layer.Layer<Service> = Layer.succeed(
   Service,
   Service.of({
-    read: () => Effect.fail(new IncidentIoUnavailable({ operation: "read", cause: "INCIDENT_IO_API_KEY is not set" })),
+    read: () => Effect.fail(new NotConfigured({ setting: "INCIDENT_IO_API_KEY" })),
   }),
 )

@@ -145,6 +145,8 @@ export const subjectOf = (observed: ResourceFacts): ResourceRef =>
 export const ReadReply = Schema.TaggedUnion({
   Read: { observed: ResourceFacts },
   NotFound: {},
+  /** The gateway has no key for the resource's system. `setting` names the setting that would hold it. */
+  NotConfigured: { setting: Schema.String },
   Unavailable: { message: Schema.String },
 })
 
