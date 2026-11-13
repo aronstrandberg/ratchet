@@ -1,18 +1,20 @@
 import { Effect, Schema } from "effect"
 import { Event, Machine, State } from "effect-machine"
 import { toEntity } from "effect-machine/cluster"
-import { Outcome, Relation, WorkStatus } from "../protocol/pull-request.ts"
+import { SessionId, TaskId } from "../protocol/ids.ts"
+import { Outcome, PullRequestKey, Relation, WorkStatus } from "../protocol/pull-request.ts"
 import { Question } from "../protocol/session.ts"
 import { Wake } from "../protocol/wake.ts"
 
 /** A running subagent. `watching` marks one that monitors something and does no work on the task. */
 const Subagent = Schema.Struct({
-  session: Schema.String,
-  of: Schema.String,
+  session: SessionId,
+  /** The main session it works for. */
+  of: SessionId,
   kind: Schema.Literals(["working", "watching"]),
 })
 
-const OpenQuestion = Schema.Struct({ ...Question.fields, session: Schema.String })
+const OpenQuestion = Schema.Struct({ ...Question.fields, session: SessionId })
 
 /**
  * A resource the task follows, with what the attaching session last said about its work on it.
@@ -20,20 +22,23 @@ const OpenQuestion = Schema.Struct({ ...Question.fields, session: Schema.String 
  * Once the resource has ended, `status` is history: it no longer says who has to act.
  */
 const Attachment = Schema.Struct({
-  resource: Schema.String,
+  resource: PullRequestKey,
   relation: Relation,
-  session: Schema.String,
+  session: SessionId,
   status: WorkStatus,
   note: Schema.String,
   ended: Schema.NullOr(Outcome).pipe(Schema.withDecodingDefaultKey(Effect.succeed(null))),
 })
 
+/** A resource a task follows, as the task holds it. */
+export type Attachment = typeof Attachment.Type
+
 const details = {
   title: Schema.String,
-  parent: Schema.NullOr(Schema.String),
-  sessions: Schema.Array(Schema.String),
+  parent: Schema.NullOr(TaskId),
+  sessions: Schema.Array(SessionId),
   /** The main sessions that run now. */
-  running: Schema.Array(Schema.String),
+  running: Schema.Array(SessionId),
   subagents: Schema.Array(Subagent),
   questions: Schema.Array(OpenQuestion),
   attachments: Schema.Array(Attachment),
@@ -55,43 +60,54 @@ export const TaskState = State({
   Idle: details,
 })
 
+/** A task's state, in any of its tags. */
 export type TaskState = typeof TaskState.Type
 
 /** A task that exists, in any of its board states. */
 export type LiveTask = Exclude<TaskState, { _tag: "Unborn" }>
 
+/** Whether a task has not been created yet: no event has reached its cell. */
 export const isUnborn = TaskState.$is("Unborn")
 
+/** The task a main session starts when the hub first sees it. It is named after the session. */
+export const firstTaskOf = (session: SessionId): TaskId => TaskId.make(`tsk_${session.replace(/^ses_/, "")}`)
+
+/** What a subagent is for: `working` on the task, or `watching` something without working on it. */
+export const SubagentKind = Schema.Literals(["working", "watching"])
+
+export type SubagentKind = typeof SubagentKind.Type
+
+/** What can happen to a task. */
 export const TaskEvent = Event({
   Created: {
     title: Schema.String,
-    parent: Schema.NullOr(Schema.String),
-    session: Schema.String,
+    parent: Schema.NullOr(TaskId),
+    session: SessionId,
   },
   /** Everything observable about one main session at once. Replaces what the task holds for it. */
   Observed: {
-    session: Schema.String,
+    session: SessionId,
     running: Schema.Boolean,
-    subagents: Schema.Array(Schema.String),
+    subagents: Schema.Array(SessionId),
     questions: Schema.Array(Question),
   },
-  SessionStarted: { session: Schema.String },
-  SessionIdle: { session: Schema.String },
+  SessionStarted: { session: SessionId },
+  SessionIdle: { session: SessionId },
   Renamed: { title: Schema.String },
-  SubagentStarted: { of: Schema.String, session: Schema.String },
-  SubagentStopped: { session: Schema.String },
+  SubagentStarted: { of: SessionId, session: SessionId },
+  SubagentStopped: { session: SessionId },
   /** The owning session says what a subagent is for. */
-  SubagentDeclared: { session: Schema.String, kind: Schema.Literals(["working", "watching"]) },
-  QuestionAsked: { session: Schema.String, question: Question },
+  SubagentDeclared: { session: SessionId, kind: SubagentKind },
+  QuestionAsked: { session: SessionId, question: Question },
   QuestionAnswered: { id: Schema.String },
-  Attached: { resource: Schema.String, relation: Relation, session: Schema.String },
-  Detached: { resource: Schema.String },
+  Attached: { resource: PullRequestKey, relation: Relation, session: SessionId },
+  Detached: { resource: PullRequestKey },
   /** The attaching session says where its work on a resource stands. */
-  StatusSet: { resource: Schema.String, status: WorkStatus, note: Schema.String },
-  ResourceEnded: { resource: Schema.String, outcome: Outcome },
+  StatusSet: { resource: PullRequestKey, status: WorkStatus, note: Schema.String },
+  ResourceEnded: { resource: PullRequestKey, outcome: Outcome },
   WakeQueued: {
     id: Schema.String,
-    session: Schema.String,
+    session: SessionId,
     text: Schema.String,
     /** When it was queued, in milliseconds since the epoch. */
     at: Schema.Number.pipe(Schema.withDecodingDefaultKey(Effect.succeed(0))),
@@ -130,6 +146,7 @@ const settle = (details: Details) => {
 
 const without = <A>(items: ReadonlyArray<A>, drop: (item: A) => boolean) => items.filter((item) => !drop(item))
 
+/** How a task's state follows from what happens to it. */
 export const taskMachine = Machine.make({
   state: TaskState,
   event: TaskEvent,
@@ -253,4 +270,5 @@ export const taskMachine = Machine.make({
     settle({ ...detailsOf(state), outbox: without(state.outbox, (w) => w.id === event.id) }),
   )
 
+/** A task as a cell: one per task ID. */
 export const TaskEntity = toEntity(taskMachine, { type: "Task" })

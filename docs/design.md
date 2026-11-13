@@ -304,6 +304,7 @@ provider. The second iteration adds the GitHub adapter.
 | Wake-ups | A change that a task can act on becomes a message in the task's outbox. The hub hands it to the gateway, which admits it to the session as a synthetic message, and the message leaves the outbox once OpenCode has it. `WAKE_SESSIONS` limits which sessions are woken, and is empty by default |
 | Work status | `pr_set_status` records what a session says about its work on a pull request. `waiting-user` turns the task to `NeedsMe`, until the pull request merges or closes: an attachment records how its resource ended, and its status no longer counts after that |
 | Checks | oxlint with the vendored anti-slop rules, rumdl, `tsc` and the tests, run by lefthook before each commit. The standards are the skills in `.agents/skills` |
+| Structure | Each half is domain modules, application services, ports and adapters, wired as Effect layers at its composition roots. Failures are tagged errors, IDs are branded types, and secrets are redacted values. `AGENTS.md` has the table of which file is which |
 | Deploy | The service runs from its own checkout. `scripts/deploy.sh` moves it to `origin/main` after the checks pass |
 | Tracing | Spans over OTLP to the local collector when `OTLP_URL` is set. The collector and ClickHouse are user services in `dotfiles-lovable/nix/ratchet.nix` |
 
@@ -325,8 +326,12 @@ Differences from the design above, found while building:
   decoding default, and `src/hub/stored-state.test.ts` holds one stored shape
   for each such field. Keeping the whole journal would lift this limit.
 - A second `celld dev` against the same OpenCode service would write to the same
-  sessions. There is no mode that only reads, so a change is tested with unit
-  tests, and then on the running service.
+  sessions. `scripts/scratch.sh` runs a scratch Ratchet against a stand-in for
+  OpenCode instead, so a change is tried end to end before the running service
+  gets it.
+- One pull request that could not be read stopped the reading of all the others.
+  Each is now read on its own, and one that GitHub does not have is refused when
+  a session registers it.
 - No `ghprs` registration existed on this machine when the `pr_*` tools replaced
   those tools, so nothing was imported.
 - The poller reads each pull request in full every minute, one after the other.

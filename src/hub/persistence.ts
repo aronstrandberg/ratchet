@@ -7,7 +7,7 @@ import {
   type PersistenceKey,
   type Snapshot,
 } from "effect-machine/cluster"
-import type { SqlClient } from "effect/sql"
+import type { SqlClient, SqlError } from "effect/sql"
 
 /**
  * One machine's snapshots and journal in SQLite, encoded with the machine's own schemas.
@@ -16,19 +16,38 @@ import type { SqlClient } from "effect/sql"
  * match the machine's schemas.
  */
 export interface Journaled {
-  readonly readSnapshot: (sql: SqlClient.SqlClient, entity: string) => Effect.Effect<Option.Option<Snapshot<unknown>>, unknown>
+  readonly readSnapshot: (
+    sql: SqlClient.SqlClient,
+    entity: string,
+  ) => Effect.Effect<Option.Option<Snapshot<unknown>>, StoreFailure>
   readonly readEvents: (
     sql: SqlClient.SqlClient,
     entity: string,
     after: number,
-  ) => Effect.Effect<Array<PersistedEvent<unknown>>, unknown>
-  readonly writeSnapshot: (sql: SqlClient.SqlClient, entity: string, snapshot: Snapshot<unknown>) => Effect.Effect<void, unknown>
-  readonly appendEvent: (sql: SqlClient.SqlClient, entity: string, event: PersistedEvent<unknown>) => Effect.Effect<void, unknown>
+  ) => Effect.Effect<Array<PersistedEvent<unknown>>, StoreFailure>
+  readonly writeSnapshot: (
+    sql: SqlClient.SqlClient,
+    entity: string,
+    snapshot: Snapshot<unknown>,
+  ) => Effect.Effect<void, StoreFailure>
+  readonly appendEvent: (
+    sql: SqlClient.SqlClient,
+    entity: string,
+    event: PersistedEvent<unknown>,
+  ) => Effect.Effect<void, StoreFailure>
   /** Folds the journal into the snapshot and deletes the folded events, in one transaction. */
-  readonly compact: (sql: SqlClient.SqlClient, entity: string) => Effect.Effect<Option.Option<Snapshot<unknown>>, unknown>
+  readonly compact: (
+    sql: SqlClient.SqlClient,
+    entity: string,
+  ) => Effect.Effect<Option.Option<Snapshot<unknown>>, StoreFailure>
 }
 
+/** What can go wrong in a machine's store: the database fails, or a value does not match the machine's schema. */
+type StoreFailure = SqlError.SqlError | Schema.SchemaError
+
+/** A machine's store in SQLite, typed inside by the machine's own state and events. */
 export const journaled = <S extends { readonly _tag: string }, E extends { readonly _tag: string }>(
+  // oxlint-disable-next-line typescript/no-explicit-any -- SAFETY: The store reads only the machine's state and event schemas and replays its transitions. The four parameters left open are the machine's guards, effects and context, which TypeScript cannot leave unnamed here without any.
   machine: Machine.Machine<S, E, never, any, any, void, any>,
 ): Journaled => {
   const state: Schema.Codec<S, Schema.Json> = Schema.toCodecJson(machine.stateSchema)

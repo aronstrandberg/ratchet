@@ -1,12 +1,17 @@
-import { Effect, Layer, Option, Schema } from "effect"
+import { Effect, Layer, Match, Option, Result, Schema } from "effect"
 import { McpProtocol, McpSchema, McpServer, Tool, Toolkit } from "effect/ai"
 import { HttpRouter } from "effect/http"
-import { type Env, mayWake } from "../env.ts"
-import { type Services, runtime } from "./cluster.ts"
+import type { Env } from "../env.ts"
+import { SessionId } from "../protocol/ids.ts"
 import { PullRequestRef, Relation } from "../protocol/pull-request.ts"
-import * as Commands from "./commands.ts"
-import * as Index from "./index-store.ts"
+import type { CellUnavailable } from "./cells.ts"
+import { type Services, runtime } from "./cluster.ts"
+import type { IndexError } from "./index-store.ts"
+import type { PullRequestNotFound, PullRequestUnreadable } from "./pull-request-source.ts"
 import * as PullRequests from "./pull-requests.ts"
+import type { SessionControlFailed } from "./session-control.ts"
+import { SubagentKind } from "./task.ts"
+import * as Tasks from "./tasks.ts"
 
 const instructions = `Ratchet tracks this session's work as tasks. A session works on one task at a time.
 
@@ -35,7 +40,7 @@ const Failure = Schema.Struct({ message: Schema.String })
 const TaskCurrent = Tool.make("task_current", {
   description: "Show the task this session works on now: its state, parent, subagents and open questions.",
   parameters: Tool.EmptyParams,
-  success: Commands.TaskView,
+  success: Tasks.TaskView,
   failure: Failure,
   failureMode: "return",
   dependencies: [McpSchema.McpRequestContext],
@@ -46,12 +51,12 @@ const TaskStart = Tool.make("task_start", {
     "Start a new task and make it this session's current task. Use it when this session begins work that is not part of its current task.",
   parameters: Schema.Struct({
     title: Schema.String.annotate({ description: "A short name for the new task, as it should read on a board." }),
-    relation: Schema.Literals(["child", "sibling"]).annotate({
+    relation: Tasks.Placement.annotate({
       description:
         "child: the new task came out of the current one. sibling: it is unrelated to the current one and gets the same parent.",
     }),
   }),
-  success: Schema.Struct({ task: Commands.TaskView, left: Schema.String }),
+  success: Schema.Struct({ task: Tasks.TaskView, left: Tasks.TaskView.fields.id }),
   failure: Failure,
   failureMode: "return",
   dependencies: [McpSchema.McpRequestContext],
@@ -66,7 +71,7 @@ const TaskFork = Tool.make("task_fork", {
       description: "What the fork should do, as its first message. The fork knows this session's history up to now.",
     }),
   }),
-  success: Schema.Struct({ session: Schema.String }),
+  success: Schema.Struct({ session: SessionId }),
   failure: Failure,
   failureMode: "return",
   dependencies: [McpSchema.McpRequestContext],
@@ -76,22 +81,22 @@ const SubagentDeclare = Tool.make("subagent_declare", {
   description:
     "Say what a running subagent of this session is for. watching: it monitors something and does no work on the task. working: it works on the task (the default).",
   parameters: Schema.Struct({
-    session: Schema.String.annotate({ description: "The subagent's session ID, starting with ses_." }),
-    kind: Schema.Literals(["working", "watching"]),
+    session: SessionId.annotate({ description: "The subagent's session ID, starting with ses_." }),
+    kind: SubagentKind,
   }),
-  success: Commands.TaskView,
+  success: Tasks.TaskView,
   failure: Failure,
   failureMode: "return",
   dependencies: [McpSchema.McpRequestContext],
 })
 
 const reference = {
-  owner: Schema.String.annotate({ description: "GitHub repository owner." }),
-  repo: Schema.String.annotate({ description: "GitHub repository name." }),
-  number: Schema.Int.annotate({ description: "Pull request number." }),
+  owner: PullRequestRef.fields.owner.annotate({ description: "GitHub repository owner." }),
+  repo: PullRequestRef.fields.repo.annotate({ description: "GitHub repository name." }),
+  number: PullRequestRef.fields.number.annotate({ description: "Pull request number." }),
 }
 
-const Registered = Schema.Struct({ task: Schema.String, pullRequest: Schema.String })
+const Registered = PullRequests.Registration
 
 const PrRegister = Tool.make("pr_register", {
   description:
@@ -156,9 +161,7 @@ const SessionTools = Toolkit.make(
   PrUnregister,
 )
 
-const pullRequestRef = Schema.decodeUnknownSync(PullRequestRef)
-
-const CallerMetadata = Schema.Struct({ "ai.opencode/sessionID": Schema.String })
+const CallerMetadata = Schema.Struct({ "ai.opencode/sessionID": SessionId })
 
 /** The OpenCode session that made the request. OpenCode sends it in the request's metadata, not as an argument. */
 const caller = Effect.flatMap(McpSchema.McpRequestContext, (context) =>
@@ -169,68 +172,70 @@ const caller = Effect.flatMap(McpSchema.McpRequestContext, (context) =>
   }),
 )
 
-const failure = (cause: unknown) => ({
-  message:
-    cause instanceof Commands.NoTask
-      ? `Ratchet has no task for session ${cause.session} yet. It learns about a session within seconds of its first message.`
-      : cause instanceof PullRequests.NotRegistered
-        ? `${cause.pullRequest} is not registered on a task of this session. Call pr_register first.`
-        : String(cause),
-})
+/** The hub's runtime could not be built or did not run the operation. */
+class HubDown extends Schema.TaggedError<HubDown>()("HubDown", { cause: Schema.Defect() }) {}
+
+type ToolFailure =
+  | Tasks.NoTask
+  | PullRequests.NotRegistered
+  | PullRequestNotFound
+  | PullRequestUnreadable
+  | SessionControlFailed
+  | CellUnavailable
+  | IndexError
+  | HubDown
+
+/** What a session reads when a tool fails: what went wrong and what it can do about it. */
+const explain = Match.type<ToolFailure>().pipe(
+  Match.tagsExhaustive({
+    NoTask: ({ session }) =>
+      `Ratchet has no task for session ${session} yet. It learns about a session within seconds of its first message.`,
+    NotRegistered: ({ pullRequest }) =>
+      `${pullRequest} is not registered on a task of this session. Call pr_register first.`,
+    PullRequestNotFound: ({ pullRequest }) =>
+      `GitHub has no pull request ${pullRequest}, or Ratchet cannot see it. It is not registered.`,
+    PullRequestUnreadable: ({ pullRequest }) =>
+      `${pullRequest} is registered, but GitHub could not be read just now. Ratchet reads it again within a minute.`,
+    SessionControlFailed: ({ operation, cause }) => `OpenCode did not ${operation}: ${String(cause)}`,
+    CellUnavailable: ({ cell }) => `Ratchet could not reach ${cell}. Try again.`,
+    IndexError: ({ operation }) => `Ratchet's index failed (${operation}). The change itself is recorded.`,
+    HubDown: ({ cause }) => `Ratchet is not running: ${String(cause)}`,
+  }),
+)
 
 const handlers = (env: Env) => {
-  const db = Index.d1(env.INDEX)
-
-  /** Runs a hub command on the cluster runtime of this isolate. */
-  const run = <A, E>(command: Effect.Effect<A, E, Services>) =>
+  /** Runs one operation of the hub on its runtime in this isolate, and puts a failure into words. */
+  const run = <A, E extends ToolFailure>(operation: Effect.Effect<A, E, Services>) =>
     Effect.tryPromise({
-      try: () => runtime(env).then((app) => app.runPromise(command)),
-      catch: failure,
-    })
+      try: () => runtime(env).then((hub) => hub.runPromise(Effect.result(operation))),
+      catch: (cause) => new HubDown({ cause }),
+    }).pipe(
+      Effect.flatMap((result) => (Result.isSuccess(result) ? Effect.succeed(result.success) : Effect.fail(result.failure))),
+      Effect.mapError((failure) => ({ message: explain(failure) })),
+    )
+
+  const tasks = <A, E extends ToolFailure>(use: (tasks: Tasks.Interface, session: SessionId) => Effect.Effect<A, E>) =>
+    Effect.flatMap(caller, (session) => run(Effect.flatMap(Tasks.Service, (service) => use(service, session))))
+
+  const pullRequests = <A, E extends ToolFailure>(
+    use: (pullRequests: PullRequests.Interface, session: SessionId) => Effect.Effect<A, E>,
+  ) => Effect.flatMap(caller, (session) => run(Effect.flatMap(PullRequests.Service, (service) => use(service, session))))
 
   return SessionTools.toLayer(
     SessionTools.of({
-      task_current: () => Effect.flatMap(caller, (session) => run(Commands.current(session))),
-      task_start: ({ title, relation }) =>
-        Effect.gen(function* () {
-          const session = yield* caller
-          const started = yield* run(Commands.start(db, session, title, relation))
-          yield* Effect.tryPromise({ try: () => env.GATEWAY.recordTask(session, started.task.id), catch: failure })
-
-          return started
-        }),
+      task_current: () => tasks((service, session) => service.current(session)),
+      task_start: ({ title, relation }) => tasks((service, session) => service.start(session, title, relation)),
       task_fork: ({ title, prompt }) =>
-        Effect.gen(function* () {
-          const session = yield* caller
-
-          const fork = yield* Effect.tryPromise({
-            try: () => env.GATEWAY.forkSession(session, title, prompt),
-            catch: failure,
-          })
-
-          return { session: fork }
-        }),
+        tasks((service, session) => Effect.map(service.fork(session, title, prompt), (fork) => ({ session: fork }))),
       subagent_declare: ({ session: subagent, kind }) =>
-        Effect.flatMap(caller, (session) => run(Commands.declareSubagent(db, session, subagent, kind))),
+        tasks((service, session) => service.declareSubagent(session, subagent, kind)),
       pr_register: ({ owner, repo, number, relation }) =>
-        Effect.gen(function* () {
-          const session = yield* caller
-          const ref = pullRequestRef({ owner, repo, number })
-          const registered = yield* run(PullRequests.register(db, session, ref, relation ?? "owns"))
-          // The first read gives the task something to show, and starts the poller.
-          yield* Effect.tryPromise({ try: () => env.GATEWAY.observePullRequest(ref), catch: failure })
-
-          return { ...registered, wakes: relation !== "context" && mayWake(env, session) }
-        }),
+        pullRequests((service, session) => service.register(session, { owner, repo, number }, relation ?? "owns")),
       pr_set_status: ({ owner, repo, number, state, note }) =>
-        Effect.flatMap(caller, (session) =>
-          run(PullRequests.setStatus(db, session, pullRequestRef({ owner, repo, number }), state, note)),
-        ),
-      pr_list: () => Effect.flatMap(caller, (session) => run(PullRequests.list(session))),
+        pullRequests((service, session) => service.setStatus(session, { owner, repo, number }, state, note)),
+      pr_list: () => pullRequests((service, session) => service.list(session)),
       pr_unregister: ({ owner, repo, number }) =>
-        Effect.flatMap(caller, (session) =>
-          run(PullRequests.unregister(db, session, pullRequestRef({ owner, repo, number }))),
-        ),
+        pullRequests((service, session) => service.unregister(session, { owner, repo, number })),
     }),
   )
 }

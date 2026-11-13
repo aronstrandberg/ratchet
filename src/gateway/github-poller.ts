@@ -1,54 +1,50 @@
 import { DurableObject } from "cloudflare:workers"
 import { Effect, Result } from "effect"
 import type { Env } from "../env.ts"
-import * as Telemetry from "../telemetry.ts"
-import * as GitHub from "./github.ts"
+import * as PullRequestPoll from "./pull-request-poll.ts"
+import { runtime } from "./runtime.ts"
 
 const interval = 60_000
 
+/** How the reading of watched pull requests is doing. */
 export interface PollerStatus {
   readonly polls: number
   readonly watched: number
+  /** Pull requests the last round could not read or report. */
+  readonly failed: number
   readonly lastError: string | null
 }
 
 /**
- * Reads every pull request the hub watches once a minute and hands each observation to the hub.
+ * Reads every pull request the hub watches once a minute.
  *
  * It stands in for the webhook proxy stream. An alarm drives it, so it survives a restart.
  */
 export class GitHubPoller extends DurableObject<Env> {
-  #status: PollerStatus = { polls: 0, watched: 0, lastError: null }
+  #status: PollerStatus = { polls: 0, watched: 0, failed: 0, lastError: null }
 
-  /** Arms the next poll if none is armed. */
+  /** Arms the next round if none is armed, and reports the last one. */
   async ensure(): Promise<PollerStatus> {
     if ((await this.ctx.storage.getAlarm()) === null) await this.ctx.storage.setAlarm(Date.now() + interval)
 
     return this.#status
   }
 
+  /** Runs one round and arms the next. */
   override async alarm(): Promise<void> {
     await this.ctx.storage.setAlarm(Date.now() + interval)
-    const env = this.env
+    const polls = this.#status.polls + 1
+    const gateway = runtime(this.env)
 
-    const poll = Effect.gen(function* () {
-      const refs = yield* Effect.tryPromise(() => env.HUB.watchedPullRequests())
+    if (Result.isFailure(gateway)) {
+      this.#status = { ...this.#status, polls, lastError: gateway.failure.message }
 
-      for (const ref of refs) {
-        const facts = yield* GitHub.readSettled(env.GITHUB_TOKEN, ref)
-        yield* Effect.tryPromise(() => env.HUB.pullRequestFacts(facts))
-      }
+      return
+    }
 
-      // A wake-up that failed before gets another try.
-      yield* Effect.tryPromise(() => env.HUB.deliverWakes())
-
-      return refs.length
-    }).pipe(Effect.withSpan("GitHubPoller.poll"), Effect.provide(Telemetry.layer(env, "ratchet-gateway")))
-
-    const result = await Effect.runPromise(Effect.result(poll))
-    this.#status =
-      Result.isSuccess(result)
-        ? { polls: this.#status.polls + 1, watched: result.success, lastError: null }
-        : { ...this.#status, polls: this.#status.polls + 1, lastError: String(result.failure).slice(0, 500) }
+    const round = await gateway.success.runPromise(Effect.result(PullRequestPoll.round))
+    this.#status = Result.isSuccess(round)
+      ? { polls, watched: round.success.watched, failed: round.success.failed, lastError: null }
+      : { ...this.#status, polls, lastError: String(round.failure).slice(0, 500) }
   }
 }

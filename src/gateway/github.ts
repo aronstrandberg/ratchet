@@ -1,11 +1,38 @@
-import { Effect, Schema } from "effect"
+import { Context, Effect, Layer, Redacted, Schema } from "effect"
 import { FetchHttpClient, HttpClient, HttpClientRequest, HttpClientResponse } from "effect/http"
 import type { Check, PullRequestFacts, PullRequestRef, Review } from "../protocol/pull-request.ts"
 
-export class GitHubError extends Schema.TaggedError<GitHubError>()("GitHubError", {
-  operation: Schema.String,
-  message: Schema.String,
+/** GitHub has no pull request under this reference, or the token cannot see it. */
+export class PullRequestNotFound extends Schema.TaggedError<PullRequestNotFound>()("PullRequestNotFound", {
+  owner: Schema.String,
+  repo: Schema.String,
+  number: Schema.Number,
 }) {}
+
+/** GitHub did not answer, refused the request, or answered with something this adapter cannot read. */
+export class GitHubUnavailable extends Schema.TaggedError<GitHubUnavailable>()("GitHubUnavailable", {
+  operation: Schema.String,
+  cause: Schema.Defect(),
+}) {}
+
+/** The token the gateway reads GitHub with. */
+export interface Config {
+  readonly token: Redacted.Redacted<string>
+}
+
+/** GitHub's pull requests, as the gateway reads them. */
+export interface Interface {
+  /**
+   * Reads a pull request's current state in one GraphQL call, without any comment text.
+   *
+   * GitHub works out on demand whether a pull request merges cleanly, and the first read often says
+   * `unknown`. This reads once more after two seconds when it does.
+   */
+  readonly read: (ref: PullRequestRef) => Effect.Effect<PullRequestFacts, PullRequestNotFound | GitHubUnavailable>
+}
+
+/** The gateway's connection to GitHub. */
+export class Service extends Context.Service<Service, Interface>()("@ratchet/gateway/GitHub") {}
 
 const query = `query($owner: String!, $repo: String!, $number: Int!) {
   viewer { login }
@@ -34,7 +61,7 @@ const query = `query($owner: String!, $repo: String!, $number: Int!) {
 const Author = Schema.NullOr(Schema.Struct({ login: Schema.String }))
 const Comments = Schema.Struct({ nodes: Schema.Array(Schema.Struct({ author: Author })) })
 
-const Context = Schema.Struct({
+const CheckContext = Schema.Struct({
   __typename: Schema.String,
   name: Schema.optional(Schema.String),
   status: Schema.optional(Schema.String),
@@ -45,7 +72,9 @@ const Context = Schema.Struct({
 })
 
 const Response = Schema.Struct({
-  errors: Schema.optional(Schema.Array(Schema.Struct({ message: Schema.String }))),
+  errors: Schema.optional(
+    Schema.Array(Schema.Struct({ message: Schema.String, type: Schema.optional(Schema.String) })),
+  ),
   data: Schema.optional(
     Schema.NullOr(
       Schema.Struct({
@@ -66,7 +95,7 @@ const Response = Schema.Struct({
                     Schema.Struct({
                       commit: Schema.Struct({
                         statusCheckRollup: Schema.NullOr(
-                          Schema.Struct({ contexts: Schema.Struct({ nodes: Schema.Array(Context) }) }),
+                          Schema.Struct({ contexts: Schema.Struct({ nodes: Schema.Array(CheckContext) }) }),
                         ),
                       }),
                     }),
@@ -92,7 +121,7 @@ const Response = Schema.Struct({
 // SAFETY: toLowerCase of a string literal is the literal that Lowercase names.
 const lower = <A extends string>(value: A) => value.toLowerCase() as Lowercase<A>
 
-const check = (context: typeof Context.Type): Check => {
+const check = (context: typeof CheckContext.Type): Check => {
   const required = context.isRequired ?? false
 
   if (context.__typename === "CheckRun") {
@@ -112,66 +141,76 @@ const check = (context: typeof Context.Type): Check => {
 
 const reviewStates: ReadonlyArray<Review["state"]> = ["approved", "changes_requested", "commented", "dismissed", "pending"]
 
-/** Reads a pull request's current state from GitHub in one GraphQL call. */
-export const read = (token: string, ref: PullRequestRef): Effect.Effect<PullRequestFacts, GitHubError> =>
+const login = (author: typeof Author.Type) => author?.login ?? "ghost"
+
+/** Builds the connection on an HTTP client. Nothing is sent until a read runs. */
+export const make = (config: Config): Effect.Effect<Interface, never, HttpClient.HttpClient> =>
   Effect.gen(function* () {
     const http = yield* HttpClient.HttpClient
 
-    const response = yield* HttpClientRequest.post("https://api.github.com/graphql").pipe(
-      HttpClientRequest.bearerToken(token),
-      HttpClientRequest.setHeader("user-agent", "ratchet"),
-      HttpClientRequest.bodyJsonUnsafe({ query, variables: ref }),
-      http.execute,
-      Effect.flatMap(HttpClientResponse.schemaBodyJson(Response)),
-    )
+    const once = Effect.fn("GitHub.read")(function* (ref: PullRequestRef) {
+      yield* Effect.annotateCurrentSpan("github.pr", `${ref.owner}/${ref.repo}#${ref.number}`)
 
-    const pr = response.data?.repository?.pullRequest
+      const response = yield* HttpClientRequest.post("https://api.github.com/graphql").pipe(
+        HttpClientRequest.bearerToken(Redacted.value(config.token)),
+        HttpClientRequest.setHeader("user-agent", "ratchet"),
+        HttpClientRequest.bodyJsonUnsafe({ query, variables: ref }),
+        http.execute,
+        Effect.flatMap(HttpClientResponse.schemaBodyJson(Response)),
+        Effect.mapError((cause) => new GitHubUnavailable({ operation: "read", cause })),
+      )
 
-    if (pr === null || pr === undefined || response.data === null || response.data === undefined) {
-      const message = response.errors?.map((error) => error.message).join("; ") ?? "pull request not found"
+      const errors = response.errors ?? []
+      const pr = response.data?.repository?.pullRequest
 
-      return yield* new GitHubError({ operation: "read", message })
-    }
+      if (response.data === null || response.data === undefined || pr === null || pr === undefined) {
+        // GitHub answers a missing repository or pull request with an error of this type, and no data for it.
+        return errors.length === 0 || errors.some((error) => error.type === "NOT_FOUND")
+          ? yield* new PullRequestNotFound(ref)
+          : yield* new GitHubUnavailable({ operation: "read", cause: errors.map((error) => error.message).join("; ") })
+      }
 
-    const login = (author: typeof Author.Type) => author?.login ?? "ghost"
+      const facts: PullRequestFacts = {
+        ref,
+        title: pr.title,
+        state: lower(pr.state),
+        draft: pr.isDraft,
+        head: pr.headRefOid,
+        mergeable: lower(pr.mergeable),
+        reviewDecision: pr.reviewDecision === null ? null : lower(pr.reviewDecision),
+        queued: pr.mergeQueueEntry !== null,
+        checks: (pr.commits.nodes[0]?.commit.statusCheckRollup?.contexts.nodes ?? []).map(check),
+        threads: pr.reviewThreads.nodes.map((thread) => ({
+          id: thread.id,
+          resolved: thread.isResolved,
+          author: login(thread.first.nodes[0]?.author ?? null),
+          lastAuthor: login(thread.last.nodes[0]?.author ?? null),
+        })),
+        reviews: pr.reviews.nodes.flatMap((review) => {
+          const state = reviewStates.find((known) => known === review.state.toLowerCase())
 
-    return {
-      ref,
-      title: pr.title,
-      state: lower(pr.state),
-      draft: pr.isDraft,
-      head: pr.headRefOid,
-      mergeable: lower(pr.mergeable),
-      reviewDecision: pr.reviewDecision === null ? null : lower(pr.reviewDecision),
-      queued: pr.mergeQueueEntry !== null,
-      checks: (pr.commits.nodes[0]?.commit.statusCheckRollup?.contexts.nodes ?? []).map(check),
-      threads: pr.reviewThreads.nodes.map((thread) => ({
-        id: thread.id,
-        resolved: thread.isResolved,
-        author: login(thread.first.nodes[0]?.author ?? null),
-        lastAuthor: login(thread.last.nodes[0]?.author ?? null),
-      })),
-      reviews: pr.reviews.nodes.flatMap((review) => {
-        const state = reviewStates.find((known) => known === review.state.toLowerCase())
+          return state === undefined ? [] : [{ id: review.id, author: login(review.author), state }]
+        }),
+        viewer: response.data.viewer.login,
+      }
 
-        return state === undefined ? [] : [{ id: review.id, author: login(review.author), state }]
-      }),
-      viewer: response.data.viewer.login,
-    }
-  }).pipe(
-    Effect.mapError((cause) => (cause instanceof GitHubError ? cause : new GitHubError({ operation: "read", message: String(cause) }))),
-    Effect.provide(FetchHttpClient.layer),
-    Effect.withSpan("GitHub.read", { attributes: { "github.pr": `${ref.owner}/${ref.repo}#${ref.number}` } }),
-  )
+      return facts
+    })
 
-/**
- * Reads a pull request, and reads it once more when GitHub has not worked out yet whether it merges cleanly.
- *
- * GitHub computes mergeability on demand: the first read of a pull request often says `unknown`.
- */
-export const readSettled = (token: string, ref: PullRequestRef): Effect.Effect<PullRequestFacts, GitHubError> =>
-  Effect.flatMap(read(token, ref), (facts) =>
-    facts.state === "open" && facts.mergeable === "unknown"
-      ? Effect.andThen(Effect.sleep("2 seconds"), read(token, ref))
-      : Effect.succeed(facts),
-  )
+    const read = (ref: PullRequestRef) =>
+      Effect.flatMap(once(ref), (facts) =>
+        facts.state === "open" && facts.mergeable === "unknown"
+          ? Effect.andThen(Effect.sleep("2 seconds"), once(ref))
+          : Effect.succeed(facts),
+      )
+
+    return Service.of({ read })
+  })
+
+/** The connection to GitHub, still in need of an HTTP client. */
+export const layerWithoutDependencies = (config: Config): Layer.Layer<Service, never, HttpClient.HttpClient> =>
+  Layer.effect(Service, make(config))
+
+/** The connection to GitHub over `fetch`. */
+export const layer = (config: Config): Layer.Layer<Service> =>
+  layerWithoutDependencies(config).pipe(Layer.provide(FetchHttpClient.layer))
