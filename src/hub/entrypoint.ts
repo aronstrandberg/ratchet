@@ -1,6 +1,7 @@
 import { WorkerEntrypoint } from "cloudflare:workers"
 import { Effect, Schema } from "effect"
 import type { Env } from "../env.ts"
+import { forBinding } from "../failure.ts"
 import { PullRequestFacts, type PullRequestRef } from "../protocol/pull-request.ts"
 import { Binding, SessionFact } from "../protocol/session.ts"
 import { type Services, runtime } from "./cluster.ts"
@@ -20,7 +21,9 @@ const decodeObservation = Schema.decodeEffect(PullRequestFacts)
  */
 export class Hub extends WorkerEntrypoint<Env> {
   #run<A, E>(operation: Effect.Effect<A, E, Services>): Promise<A> {
-    return runtime(this.env).then((hub) => hub.runPromise(operation))
+    return runtime(this.env)
+      .then((hub) => hub.runPromise(operation))
+      .catch((cause: unknown) => Promise.reject(forBinding(cause)))
   }
 
   /** Applies facts about sessions in order, and returns the task of each main session the facts opened. */

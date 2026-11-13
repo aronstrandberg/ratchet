@@ -1,4 +1,5 @@
 import { Context, Effect, Layer, Schema } from "effect"
+import { causeText } from "../failure.ts"
 import type { SessionId, TaskId } from "../protocol/ids.ts"
 import type { PullRequestKey } from "../protocol/pull-request.ts"
 import * as Index from "./index-store.ts"
@@ -11,7 +12,11 @@ export class CellUnavailable extends Schema.TaggedError<CellUnavailable>()("Cell
   /** The kind of cell and its ID, such as `Task/tsk_1`. */
   cell: Schema.String,
   cause: Schema.Defect(),
-}) {}
+}) {
+  override get message(): string {
+    return `${this.cell} did not answer: ${causeText(this.cause)}`
+  }
+}
 
 /**
  * The tasks, sessions and pull requests as stored cells, with the read model kept in step.

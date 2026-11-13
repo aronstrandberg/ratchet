@@ -1,6 +1,7 @@
 import { Context, Effect, Layer, Option, Redacted, Schema, Stream } from "effect"
 import { Sse } from "effect/encoding"
 import { FetchHttpClient, HttpClient, HttpClientRequest, HttpClientResponse } from "effect/http"
+import { causeText } from "../failure.ts"
 import { SessionId, type TaskId } from "../protocol/ids.ts"
 import { type Question, SessionFact, SessionOrigin } from "../protocol/session.ts"
 import type { Wake } from "../protocol/wake.ts"
@@ -9,7 +10,11 @@ import type { Wake } from "../protocol/wake.ts"
 export class OpenCodeUnavailable extends Schema.TaggedError<OpenCodeUnavailable>()("OpenCodeUnavailable", {
   operation: Schema.String,
   cause: Schema.Defect(),
-}) {}
+}) {
+  override get message(): string {
+    return `OpenCode failed (${this.operation}): ${causeText(this.cause)}`
+  }
+}
 
 /** Where the OpenCode service listens, and the password of its `opencode` user. */
 export interface Config {

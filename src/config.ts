@@ -5,7 +5,12 @@ import * as WakePolicy from "./hub/wake-policy.ts"
 export class InvalidConfig extends Schema.TaggedError<InvalidConfig>()("InvalidConfig", {
   setting: Schema.String,
   problem: Schema.String,
-}) {}
+}) {
+  /** What the service reports when it cannot start. */
+  override get message(): string {
+    return `${this.setting}: ${this.problem}`
+  }
+}
 
 /** The settings both halves read as plain variables. Bindings are not settings and stay in `Env`. */
 export interface Settings {

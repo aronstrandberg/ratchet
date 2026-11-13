@@ -13,7 +13,11 @@ export type WakePolicy = typeof WakePolicy.Type
 /** A wake setting names something that is not a session ID. */
 export class InvalidWakeSetting extends Schema.TaggedError<InvalidWakeSetting>()("InvalidWakeSetting", {
   entry: Schema.String,
-}) {}
+}) {
+  override get message(): string {
+    return `"${this.entry}" is not a session ID`
+  }
+}
 
 const parseSession = Schema.decodeUnknownResult(SessionId)
 

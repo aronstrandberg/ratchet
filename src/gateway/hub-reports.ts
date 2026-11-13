@@ -1,4 +1,5 @@
 import { Context, type Effect, Schema } from "effect"
+import { causeText } from "../failure.ts"
 import type { PullRequestFacts, PullRequestRef } from "../protocol/pull-request.ts"
 import type { Binding, SessionFact } from "../protocol/session.ts"
 
@@ -6,7 +7,11 @@ import type { Binding, SessionFact } from "../protocol/session.ts"
 export class HubUnavailable extends Schema.TaggedError<HubUnavailable>()("HubUnavailable", {
   operation: Schema.String,
   cause: Schema.Defect(),
-}) {}
+}) {
+  override get message(): string {
+    return `the hub did not take ${this.operation}: ${causeText(this.cause)}`
+  }
+}
 
 /** What the gateway tells the hub, and the little it asks back. */
 export interface Interface {

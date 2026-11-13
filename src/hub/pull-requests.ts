@@ -31,7 +31,11 @@ import * as WakePolicy from "./wake-policy.ts"
 /** No task of the session follows this pull request. */
 export class NotRegistered extends Schema.TaggedError<NotRegistered>()("NotRegistered", {
   pullRequest: PullRequestKey,
-}) {}
+}) {
+  override get message(): string {
+    return `no task of the session follows ${this.pullRequest}`
+  }
+}
 
 /** What GitHub last said about a pull request. Only an open one has more than its state. */
 const GitHubView = Schema.Struct({

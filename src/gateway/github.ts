@@ -1,5 +1,6 @@
 import { Context, Effect, Layer, Redacted, Schema } from "effect"
 import { FetchHttpClient, HttpClient, HttpClientRequest, HttpClientResponse } from "effect/http"
+import { causeText } from "../failure.ts"
 import type { Check, PullRequestFacts, PullRequestRef, Review } from "../protocol/pull-request.ts"
 
 /** GitHub has no pull request under this reference, or the token cannot see it. */
@@ -7,13 +8,21 @@ export class PullRequestNotFound extends Schema.TaggedError<PullRequestNotFound>
   owner: Schema.String,
   repo: Schema.String,
   number: Schema.Number,
-}) {}
+}) {
+  override get message(): string {
+    return `GitHub has no pull request ${this.owner}/${this.repo}#${this.number}, or the token cannot see it`
+  }
+}
 
 /** GitHub did not answer, refused the request, or answered with something this adapter cannot read. */
 export class GitHubUnavailable extends Schema.TaggedError<GitHubUnavailable>()("GitHubUnavailable", {
   operation: Schema.String,
   cause: Schema.Defect(),
-}) {}
+}) {
+  override get message(): string {
+    return `GitHub failed (${this.operation}): ${causeText(this.cause)}`
+  }
+}
 
 /** The token the gateway reads GitHub with. */
 export interface Config {
