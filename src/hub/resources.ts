@@ -47,7 +47,7 @@ export class AlreadyOwned extends Schema.TaggedError<AlreadyOwned>()("AlreadyOwn
 /** What GitHub last said about a pull request. Only an open one has more than its state. */
 const GitHubView = Schema.Struct({
   state: Schema.Literals(["unseen", "open", "merged", "closed"]),
-  ci: Schema.optional(Schema.Literals(["Running", "Failing", "Finished"])),
+  ci: Schema.optional(Schema.Literals(["Absent", "Running", "Failing", "Finished"])),
   failed: Schema.optional(Schema.Array(Schema.String)),
   reviewDecision: Schema.optional(Schema.NullOr(Schema.String)),
   conflicting: Schema.optional(Schema.Boolean),

@@ -7,10 +7,15 @@ import type { Outcome, Relation } from "../protocol/resource.ts"
 import { Subscriber, attach, detach } from "./subscribers.ts"
 
 /**
- * Where CI stands on one head commit. It moves forward only: `Running`, then `Failing` once a check has failed
- * while others still run, then `Finished`. So a head produces at most two CI changes: the first failure and the end.
+ * Where CI stands on one head commit. It moves forward only: `Absent` until a check reports, `Running`, then
+ * `Failing` once a check has failed while others still run, then `Finished`. So a head produces at most two
+ * CI changes: the first failure and the end.
+ *
+ * `Absent` is not `Finished`: a repository without CI never has a check, and one with CI has none for the
+ * first seconds after a push.
  */
 export const Ci = Schema.TaggedUnion({
+  Absent: {},
   Running: {},
   Failing: { failed: Schema.Array(Schema.String) },
   Finished: { failed: Schema.Array(Schema.String) },
@@ -22,6 +27,7 @@ export type Ci = typeof Ci.Type
 /** The counted checks that have failed so far. */
 export const failedChecks = (ci: Ci): ReadonlyArray<string> =>
   Ci.match(ci, {
+    Absent: () => [],
     Running: () => [],
     Failing: ({ failed }) => failed,
     Finished: ({ failed }) => failed,
@@ -63,6 +69,8 @@ export const PullRequestEvent = Event({
 
 /** CI counts the checks the base branch requires, or every check when it requires none. */
 const ci = (checks: ReadonlyArray<Check>): Ci => {
+  if (checks.length === 0) return Ci.cases.Absent.make({})
+
   const required = checks.filter((check) => check.required)
   const counted = required.length > 0 ? required : checks
   const failed = counted.filter((check) => check.state === "failure").map((check) => check.name)
@@ -171,9 +179,9 @@ const changesWhileOpen = (before: Open, after: Open): ReadonlyArray<Change> => {
   if (!sameHead) found.push(Change.cases.HeadMoved.make({ head: after.head }))
 
   // A new head starts CI over, whatever the old head's CI said.
-  const ciBefore = sameHead ? before.ci : Ci.cases.Running.make({})
+  const ciBefore = sameHead ? before.ci : Ci.cases.Absent.make({})
 
-  if (Ci.guards.Failing(after.ci) && Ci.guards.Running(ciBefore)) {
+  if (Ci.guards.Failing(after.ci) && (Ci.guards.Running(ciBefore) || Ci.guards.Absent(ciBefore))) {
     found.push(Change.cases.CiFailing.make({ head: after.head, failed: after.ci.failed }))
   }
 

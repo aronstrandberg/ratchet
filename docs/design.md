@@ -178,7 +178,7 @@ must not wake anything. Three layers reduce it, and none is a free-form filter.
 | Layer | Turns | Into | How |
 | --- | --- | --- | --- |
 | GitHub adapter | Frames | Facts: a snapshot of head, checks, reviews and threads | A read after a frame, with a short debounce. No judgement. A frame for a passed check needs no read |
-| PR resource cell | Fact snapshots | Typed changes | A state machine. CI per head goes `Running`, `Failing`, `Finished`, so it emits at most two changes per head: the first failure and the end |
+| PR resource cell | Fact snapshots | Typed changes | A state machine. CI per head goes `Absent` (no check has reported), `Running`, `Failing`, `Finished`, so it emits at most two changes per head: the first failure and the end |
 | Subscription | Changes | Wake-ups | A change that a task can act on becomes a message in the task's outbox, naming the task. The hub hands it to the gateway, which admits it to the session as a synthetic message, and the message leaves the outbox once OpenCode has it. Each wake-up has one message ID, derived from its queue time and a hash, so a retry adds no second message. `WAKE_SESSIONS` limits which sessions are woken |
 
 | Change | Wakes an owner | Note |
