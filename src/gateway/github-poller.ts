@@ -1,24 +1,25 @@
 import { DurableObject } from "cloudflare:workers"
 import { Effect, Result } from "effect"
 import type { Env } from "../env.ts"
-import * as PullRequestPoll from "./pull-request-poll.ts"
+import * as ResourcePoll from "./resource-poll.ts"
 import { runtime } from "./runtime.ts"
 
 const interval = 60_000
 
-/** How the reading of watched pull requests is doing. */
+/** How the reading of watched resources is doing. */
 export interface PollerStatus {
   readonly polls: number
   readonly watched: number
-  /** Pull requests the last round could not read or report. */
+  /** Resources the last round could not read or report. */
   readonly failed: number
   readonly lastError: string | null
 }
 
 /**
- * Reads every pull request the hub watches once a minute.
+ * Reads every resource the hub watches once a minute: pull requests, Linear issues and incidents.
  *
- * It stands in for the webhook proxy stream. An alarm drives it, so it survives a restart.
+ * The class keeps the name it had when it read pull requests only, because a Durable Object's stored alarm
+ * belongs to its class name. An alarm drives it, so it survives a restart.
  */
 export class GitHubPoller extends DurableObject<Env> {
   #status: PollerStatus = { polls: 0, watched: 0, failed: 0, lastError: null }
@@ -42,7 +43,7 @@ export class GitHubPoller extends DurableObject<Env> {
       return
     }
 
-    const round = await gateway.success.runPromise(Effect.result(PullRequestPoll.round))
+    const round = await gateway.success.runPromise(Effect.result(ResourcePoll.round))
     this.#status = Result.isSuccess(round)
       ? { polls, watched: round.success.watched, failed: round.success.failed, lastError: null }
       : { ...this.#status, polls, lastError: String(round.failure).slice(0, 500) }

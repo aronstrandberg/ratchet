@@ -4,12 +4,13 @@ import { HttpRouter } from "effect/http"
 import type { Env } from "../env.ts"
 import { causeText } from "../failure.ts"
 import { SessionId } from "../protocol/ids.ts"
-import { PullRequestRef, Relation } from "../protocol/pull-request.ts"
+import { PullRequestRef } from "../protocol/pull-request.ts"
+import { Relation, ResourceRef, parseReference } from "../protocol/resource.ts"
 import type { CellUnavailable } from "./cells.ts"
 import { type Services, runtime } from "./cluster.ts"
 import type { IndexError } from "./index-store.ts"
-import type { PullRequestNotFound, PullRequestUnreadable } from "./pull-request-source.ts"
-import * as PullRequests from "./pull-requests.ts"
+import type { ResourceNotFound, ResourceUnreadable } from "./resource-source.ts"
+import * as Resources from "./resources.ts"
 import type { SessionControlFailed } from "./session-control.ts"
 import { SubagentKind } from "./task.ts"
 import * as Tasks from "./tasks.ts"
@@ -34,7 +35,12 @@ const instructions = `Ratchet tracks this session's work as tasks. A session wor
 - Call pr_set_status whenever the state of your work on a registered pull request changes, and before you end
   your turn: agent-working, waiting-ci, waiting-user (you need the user's answer, review or merge), blocked, or
   ready (nothing is left but merging). The note says in one sentence what you are doing, what blocks it, or what
-  you need from the user.`
+  you need from the user.
+- A Linear issue or an incident.io incident this session works on, or waits on, is registered the same way:
+  call resource_register with its address or its short name (DX-1550, INC-123), and report with
+  resource_set_status. The Linear issue a task owns is that task's ticket, and one task at most owns an issue.
+  Ratchet messages this session when someone else comments on the issue, when it goes to another person, and
+  when the issue or the incident ends.`
 
 const Failure = Schema.Struct({ message: Schema.String })
 
@@ -112,7 +118,14 @@ const reference = {
   number: PullRequestRef.fields.number.annotate({ description: "Pull request number." }),
 }
 
-const Registered = PullRequests.Registration
+const Registered = Resources.Registration
+
+const WorkState = Schema.Literals(["agent-working", "waiting-ci", "waiting-user", "blocked", "ready"])
+
+const resource = Schema.String.annotate({
+  description:
+    "The resource by its address in a browser or its short name: a pull request (owner/repo#12), a Linear issue (DX-1550) or an incident.io incident (INC-123).",
+})
 
 const PrRegister = Tool.make("pr_register", {
   description:
@@ -135,7 +148,7 @@ const PrSetStatus = Tool.make("pr_set_status", {
     "Report where this session's work on a registered pull request stands, and the next action or blocker. waiting-user puts the task in front of the user. It does not change GitHub.",
   parameters: Schema.Struct({
     ...reference,
-    state: Schema.Literals(["agent-working", "waiting-ci", "waiting-user", "blocked", "ready"]),
+    state: WorkState,
     note: Schema.String.annotate({
       description: "What is happening, what blocks progress, or the action needed from the user. One sentence.",
     }),
@@ -148,9 +161,9 @@ const PrSetStatus = Tool.make("pr_set_status", {
 
 const PrList = Tool.make("pr_list", {
   description:
-    "List the pull requests the tasks of this session follow, on its current task and on tasks it worked on before: the task, the relation, the last reported work status, and what GitHub last said (CI, review decision, conflict, merge queue, open threads).",
+    "List the pull requests, Linear issues and incidents the tasks of this session follow, on its current task and on tasks it worked on before: the task, the relation, the last reported work status, and where each stands in its own system. A pull request also shows what GitHub last said (CI, review decision, conflict, merge queue, open threads).",
   parameters: Tool.EmptyParams,
-  success: PullRequests.Following,
+  success: Resources.Following,
   failure: Failure,
   failureMode: "return",
   dependencies: [McpSchema.McpRequestContext],
@@ -160,6 +173,48 @@ const PrUnregister = Tool.make("pr_unregister", {
   description:
     "Stop this session's current task following a pull request that was registered by mistake or no longer matters to it. It does not close or change the pull request.",
   parameters: Schema.Struct(reference),
+  success: Registered,
+  failure: Failure,
+  failureMode: "return",
+  dependencies: [McpSchema.McpRequestContext],
+})
+
+const ResourceRegister = Tool.make("resource_register", {
+  description:
+    "Attach a Linear issue, an incident or a pull request to this session's current task, so Ratchet follows it in its own system. The answer's wakes field says whether Ratchet will message this session when it needs action. One task at most owns a Linear issue: the issue is that task's ticket. It changes nothing in the other system.",
+  parameters: Schema.Struct({
+    resource,
+    relation: Schema.optional(Relation).annotate({
+      description:
+        "owns (the default): this task is the work on it, and this session drives it. waits_on: this task needs it done and does not work on it; only its end wakes the session. context: related, and nothing about it wakes anyone.",
+    }),
+  }),
+  success: Schema.Struct({ ...Registered.fields, wakes: Schema.Boolean }),
+  failure: Failure,
+  failureMode: "return",
+  dependencies: [McpSchema.McpRequestContext],
+})
+
+const ResourceSetStatus = Tool.make("resource_set_status", {
+  description:
+    "Report where this session's work on a registered resource stands, and the next action or blocker. waiting-user puts the task in front of the user. It changes nothing in the other system.",
+  parameters: Schema.Struct({
+    resource,
+    state: WorkState,
+    note: Schema.String.annotate({
+      description: "What is happening, what blocks progress, or the action needed from the user. One sentence.",
+    }),
+  }),
+  success: Registered,
+  failure: Failure,
+  failureMode: "return",
+  dependencies: [McpSchema.McpRequestContext],
+})
+
+const ResourceUnregister = Tool.make("resource_unregister", {
+  description:
+    "Stop a task of this session following a resource that was registered by mistake or no longer matters to it. It changes nothing in the other system.",
+  parameters: Schema.Struct({ resource }),
   success: Registered,
   failure: Failure,
   failureMode: "return",
@@ -176,7 +231,26 @@ const SessionTools = Toolkit.make(
   PrSetStatus,
   PrList,
   PrUnregister,
+  ResourceRegister,
+  ResourceSetStatus,
+  ResourceUnregister,
 )
+
+/** What a session gave as a resource is none of the kinds Ratchet follows. */
+class UnknownReference extends Schema.TaggedError<UnknownReference>()("UnknownReference", { given: Schema.String }) {
+  override get message(): string {
+    return `Ratchet cannot tell what "${this.given}" is`
+  }
+}
+
+/** Reads the resource a session named. */
+const named = (given: string) =>
+  Option.match(parseReference(given), {
+    onNone: () => Effect.fail(new UnknownReference({ given })),
+    onSome: (ref) => Effect.succeed(ref),
+  })
+
+const pullRequest = (ref: PullRequestRef) => ResourceRef.cases.PullRequest.make(ref)
 
 const CallerMetadata = Schema.Struct({ "ai.opencode/sessionID": SessionId })
 
@@ -199,9 +273,11 @@ class HubDown extends Schema.TaggedError<HubDown>()("HubDown", { cause: Schema.D
 type ToolFailure =
   | Tasks.NoTask
   | Tasks.NotATaskOfSession
-  | PullRequests.NotRegistered
-  | PullRequestNotFound
-  | PullRequestUnreadable
+  | Resources.NotRegistered
+  | Resources.AlreadyOwned
+  | UnknownReference
+  | ResourceNotFound
+  | ResourceUnreadable
   | SessionControlFailed
   | CellUnavailable
   | IndexError
@@ -213,12 +289,13 @@ const explain = Match.type<ToolFailure>().pipe(
     NoTask: ({ session }) =>
       `Ratchet has no task for session ${session} yet. It learns about a session within seconds of its first message.`,
     NotATaskOfSession: ({ task }) => `This session has not worked on ${task}, so it cannot rename it.`,
-    NotRegistered: ({ pullRequest }) =>
-      `${pullRequest} is not registered on a task of this session. Call pr_register first.`,
-    PullRequestNotFound: ({ pullRequest }) =>
-      `GitHub has no pull request ${pullRequest}, or Ratchet cannot see it. It is not registered.`,
-    PullRequestUnreadable: ({ pullRequest }) =>
-      `${pullRequest} is registered, but GitHub could not be read just now. Ratchet reads it again within a minute.`,
+    NotRegistered: ({ resource }) => `${resource} is not registered on a task of this session. Register it first.`,
+    AlreadyOwned: ({ resource, owner }) =>
+      `${resource} is the ticket of task ${owner} already, and one task at most owns it. Register it with relation waits_on or context, or work in that task.`,
+    UnknownReference: (failure) =>
+      `${failure.message}. Give a pull request, a Linear issue or an incident by its address or its short name, such as owner/repo#12, DX-1550 or INC-123.`,
+    ResourceNotFound: (failure) => `${failure.message}. It is not registered.`,
+    ResourceUnreadable: (failure) => `It is registered, but ${failure.message}. Ratchet reads it again within a minute.`,
     SessionControlFailed: (failure) => failure.message,
     CellUnavailable: (failure) => `${failure.message}. Try again.`,
     IndexError: (failure) => `${failure.message}. The change itself is recorded.`,
@@ -240,9 +317,9 @@ const handlers = (env: Env) => {
   const tasks = <A, E extends ToolFailure>(use: (tasks: Tasks.Interface, session: SessionId) => Effect.Effect<A, E>) =>
     Effect.flatMap(caller, (session) => run(Effect.flatMap(Tasks.Service, (service) => use(service, session))))
 
-  const pullRequests = <A, E extends ToolFailure>(
-    use: (pullRequests: PullRequests.Interface, session: SessionId) => Effect.Effect<A, E>,
-  ) => Effect.flatMap(caller, (session) => run(Effect.flatMap(PullRequests.Service, (service) => use(service, session))))
+  const resources = <A, E extends ToolFailure>(
+    use: (resources: Resources.Interface, session: SessionId) => Effect.Effect<A, E>,
+  ) => Effect.flatMap(caller, (session) => run(Effect.flatMap(Resources.Service, (service) => use(service, session))))
 
   return SessionTools.toLayer(
     SessionTools.of({
@@ -255,12 +332,24 @@ const handlers = (env: Env) => {
       subagent_declare: ({ session: subagent, kind }) =>
         tasks((service, session) => service.declareSubagent(session, subagent, kind)),
       pr_register: ({ owner, repo, number, relation }) =>
-        pullRequests((service, session) => service.register(session, { owner, repo, number }, relation ?? "owns")),
+        resources((service, session) =>
+          service.register(session, pullRequest({ owner, repo, number }), relation ?? "owns"),
+        ),
       pr_set_status: ({ owner, repo, number, state, note }) =>
-        pullRequests((service, session) => service.setStatus(session, { owner, repo, number }, state, note)),
-      pr_list: () => pullRequests((service, session) => service.list(session)),
+        resources((service, session) => service.setStatus(session, pullRequest({ owner, repo, number }), state, note)),
+      pr_list: () => resources((service, session) => service.list(session)),
       pr_unregister: ({ owner, repo, number }) =>
-        pullRequests((service, session) => service.unregister(session, { owner, repo, number })),
+        resources((service, session) => service.unregister(session, pullRequest({ owner, repo, number }))),
+      resource_register: ({ resource, relation }) =>
+        resources((service, session) =>
+          Effect.flatMap(named(resource), (ref) => service.register(session, ref, relation ?? "owns")),
+        ),
+      resource_set_status: ({ resource, state, note }) =>
+        resources((service, session) =>
+          Effect.flatMap(named(resource), (ref) => service.setStatus(session, ref, state, note)),
+        ),
+      resource_unregister: ({ resource }) =>
+        resources((service, session) => Effect.flatMap(named(resource), (ref) => service.unregister(session, ref))),
     }),
   )
 }

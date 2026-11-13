@@ -160,9 +160,9 @@ resource's changes.
 | Kind | Key | Facts arrive by | Read by | Exclusive |
 | --- | --- | --- | --- | --- |
 | Pull request | repo and number | Webhook proxy frame, then a read | Gateway | No |
-| Linear issue or project | Linear ID | Polling | Gateway | Yes, one task |
+| Linear issue | its identifier, such as DX-1550 | Polling | Gateway | One task owns it; others may wait on it |
 | Slack thread or DM | channel and timestamp | Polling | Gateway | No |
-| incident.io incident | incident ID | Polling | Gateway | No |
+| incident.io incident | the number of its reference | Polling | Gateway | No |
 | Other link | URL | Nothing | Nothing | No |
 
 Uniqueness needs no lock: the resource cell handles one message at a time, so it
@@ -307,6 +307,7 @@ provider. The second iteration adds the GitHub adapter.
 | Structure | Each half is domain modules, application services, ports and adapters, wired as Effect layers at its composition roots. Failures are tagged errors, IDs are branded types, and secrets are redacted values. `AGENTS.md` has the table of which file is which |
 | Deploy | The service runs from its own checkout. `scripts/deploy.sh` moves it to `origin/main` after the checks pass |
 | Proxy sign-in | The gateway registers itself as an OAuth client at `lovable.dev/oauth`, and a Durable Object holds the grant and renews its token. The stream that uses it is not built |
+| Linear issues and incidents | A task follows a Linear issue or an incident.io incident the way it follows a pull request: a cell per resource, an observation read by the gateway once a minute, typed changes, wake-ups by relation. `resource_register` takes an address or a short name. The gateway reads Linear's GraphQL API and incident.io's REST API with a key each; without a key, reads of that kind fail and nothing else does. Read against a stand-in only so far: the real APIs need the keys |
 | Tracing | Spans over OTLP to the local collector when `OTLP_URL` is set. The collector and ClickHouse are user services in `dotfiles-lovable/nix/ratchet.nix` |
 
 Differences from the design above, found while building:

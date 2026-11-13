@@ -1,11 +1,11 @@
 import { Effect, Layer, Schema } from "effect"
 import type { Hub } from "../hub/entrypoint.ts"
-import { PullRequestRef } from "../protocol/pull-request.ts"
+import { ResourceRef } from "../protocol/resource.ts"
 import { Binding } from "../protocol/session.ts"
 import * as HubReports from "./hub-reports.ts"
 
 const decodeBindings = Schema.decodeUnknownEffect(Schema.Array(Binding))
-const decodeRefs = Schema.decodeUnknownEffect(Schema.Array(PullRequestRef))
+const decodeRefs = Schema.decodeUnknownEffect(Schema.Array(ResourceRef))
 
 /** The gateway's line to the hub over the hub's service binding. */
 export const layer = (hub: Service<Hub>): Layer.Layer<HubReports.Service> => {
@@ -19,13 +19,13 @@ export const layer = (hub: Service<Hub>): Layer.Layer<HubReports.Service> => {
           Effect.flatMap(decodeBindings),
           Effect.mapError(failed("session facts")),
         ),
-      pullRequestFacts: (facts) =>
-        Effect.tryPromise({ try: () => hub.pullRequestFacts(facts), catch: failed("pull request facts") }).pipe(
+      resourceFacts: (observed) =>
+        Effect.tryPromise({ try: () => hub.resourceFacts(observed), catch: failed("resource facts") }).pipe(
           Effect.asVoid,
         ),
-      watchedPullRequests: Effect.tryPromise(() => hub.watchedPullRequests()).pipe(
+      watchedResources: Effect.tryPromise(() => hub.watchedResources()).pipe(
         Effect.flatMap(decodeRefs),
-        Effect.mapError(failed("watched pull requests")),
+        Effect.mapError(failed("watched resources")),
       ),
       deliverWakes: Effect.tryPromise({ try: () => hub.deliverWakes(), catch: failed("deliver wakes") }).pipe(
         Effect.asVoid,

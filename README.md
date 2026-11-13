@@ -27,11 +27,18 @@ The first run creates the checkout. `scripts/dev-vars.sh` writes its
 `.dev.vars`: the OpenCode URL and password, and the lines of
 `~/.config/ratchet/secrets.env` and `settings.env`.
 
+| Secret | For |
+| --- | --- |
+| `GITHUB_TOKEN` | Reading pull requests. Required |
+| `LINEAR_API_KEY` | Reading Linear issues: a personal API key. Without it, an issue cannot be registered |
+| `INCIDENT_IO_API_KEY` | Reading incidents. Without it, an incident cannot be registered |
+
 | Route | Does |
 | --- | --- |
 | `GET /gateway/opencode` | Starts the OpenCode connection if it is not running, and reports it |
 | `GET /tree` | Returns the task forest |
-| `GET /prs` | Returns the pull requests tasks follow |
+| `GET /resources` | Returns the pull requests, Linear issues and incidents tasks follow |
+| `GET /prs` | Returns the pull requests alone |
 | `POST /mcp` | The tools sessions call |
 | `GET /gateway/proxy` | Says whether Ratchet is signed in to the webhook proxy |
 | `GET /gateway/proxy/login` | Starts a sign-in and returns the address to open in a browser |

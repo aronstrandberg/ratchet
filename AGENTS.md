@@ -16,10 +16,10 @@ holds, and put it where its kind lives:
 
 | Kind | Hub | Gateway |
 | --- | --- | --- |
-| Domain: pure rules and state machines | `task.ts`, `session.ts`, `pull-request.ts`, `wake-policy.ts` | none: the gateway decides nothing |
-| Application service: an operation and the order of its effects | `tasks.ts`, `pull-requests.ts` | `session-sync.ts`, `pull-request-poll.ts` |
-| Port: what an operation needs from outside, in its own words | `session-control.ts`, `pull-request-source.ts` | `hub-reports.ts` |
-| Adapter: one technology behind a port or in front of a service | `cells.ts`, `index-store.ts`, `persistence.ts`, `gateway-binding.ts`, `mcp.ts`, `entrypoint.ts` | `opencode.ts`, `github.ts`, `hub-binding.ts`, `entrypoint.ts` |
+| Domain: pure rules and state machines | `task.ts`, `session.ts`, `pull-request.ts`, `linear-issue.ts`, `incident.ts`, `subscribers.ts`, `wake-policy.ts` | none: the gateway decides nothing |
+| Application service: an operation and the order of its effects | `tasks.ts`, `resources.ts` | `session-sync.ts`, `resource-reads.ts`, `resource-poll.ts` |
+| Port: what an operation needs from outside, in its own words | `session-control.ts`, `resource-source.ts` | `hub-reports.ts` |
+| Adapter: one technology behind a port or in front of a service | `cells.ts`, `index-store.ts`, `persistence.ts`, `gateway-binding.ts`, `mcp.ts`, `entrypoint.ts` | `opencode.ts`, `github.ts`, `linear.ts`, `incident-io.ts`, `proxy-grant.ts`, `hub-binding.ts`, `entrypoint.ts` |
 | Composition root: reads `Env`, parses settings, builds the layers | `cluster.ts` | `runtime.ts`, the Durable Object classes |
 
 A service is an Effect service: `Interface`, `Service`, `make`,
@@ -32,6 +32,15 @@ come in.
 
 The words this repository uses are in [GLOSSARY.md](GLOSSARY.md). Use them in
 code, comments and messages.
+
+## A new kind of resource
+
+A kind of resource is five things: its reference, facts and key in
+`src/protocol`, a cell with its changes in `src/hub` (`linear-issue.ts` is the
+shortest example), its three entries in `src/hub/resources.ts`, its adapter in
+`src/gateway` with its entry in `resource-reads.ts`, and its stand-in in
+`scripts/fake-outside.ts`. An observation carries who did something and never
+what they wrote.
 
 ## Stored state
 
@@ -65,6 +74,6 @@ against the same OpenCode service: it would write to the same sessions.
 
 To try a change end to end, run `scripts/scratch.sh`. It starts a Ratchet with
 empty state on port 9877 against a stand-in for OpenCode on port 9878, and reads
-the real GitHub. The header of `scripts/fake-opencode.ts` says how to add
+the real GitHub. The header of `scripts/fake-outside.ts` says how to add
 sessions and send events. Tests of the hub run on `src/hub/test-hub.ts`: the
 real services, cells in memory, the index on SQLite in memory.

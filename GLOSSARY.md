@@ -24,29 +24,33 @@ or `Idle`. It is derived, never set. _Avoid_: Status
 
 ### Following
 
-**Resource**: Something outside OpenCode that a task follows. A pull request is
-the only kind so far. _Avoid_: Attachment (that is the link, not the thing)
+**Resource**: Something outside OpenCode that a task follows: a pull request, a
+Linear issue or an incident. _Avoid_: Attachment (that is the link, not the
+thing)
+
+**Ticket**: The Linear issue a task owns. One task at most owns an issue.
 
 **Attachment**: The link from a task to a resource it follows. It stays with the
 task when the session starts another task.
 
-**Relation**: What a resource is to a task: `owns` (the task's session drives
-it), `waits_on` (the task needs it done and does not work on it) or `context`
-(related, and never a reason to wake anyone).
+**Relation**: What a resource is to a task: `owns` (the task is the work on it,
+and its session drives it), `waits_on` (the task needs it done and does not work
+on it) or `context` (related, and never a reason to wake anyone).
 
 **Work status**: What a session says about its own work on a resource, such as
 `waiting-ci` or `waiting-user`. It is a claim by the session, not a fact from
-GitHub. _Avoid_: State, CI status
+the resource's own system. _Avoid_: State, CI status
 
-**Outcome**: How a resource ended: `merged` or `closed`. After that its work
-status is history.
+**Outcome**: How a resource ended: `merged`, `closed`, `completed`, `canceled`
+or `declined`. After that its work status is history.
 
-**Observation**: What GitHub holds about a pull request at one moment, read in
-full and without judgement. _Avoid_: Event, webhook
+**Observation**: What a resource's own system holds about it at one moment, read
+in full and without judgement. It carries no text people wrote. _Avoid_: Event,
+webhook
 
-**Change**: Something that happened to a pull request between two observations,
-in terms a task can act on, such as "CI finished" or "a review was submitted".
-_Avoid_: Event, diff
+**Change**: Something that happened to a resource between two observations, in
+terms a task can act on, such as "CI finished" or "someone commented". _Avoid_:
+Event, diff
 
 **Wake-up**: A message Ratchet puts into a session because a change needs action
 from it. It starts a turn. _Avoid_: Notification, ping, nudge

@@ -3,15 +3,14 @@ import { Effect, Result, Schema } from "effect"
 import type { Env } from "../env.ts"
 import { forBinding } from "../failure.ts"
 import { SessionId, TaskId } from "../protocol/ids.ts"
-import { PullRequestRef, ReadReply } from "../protocol/pull-request.ts"
+import { ReadReply, ResourceRef } from "../protocol/resource.ts"
 import { Wake } from "../protocol/wake.ts"
-import * as GitHub from "./github.ts"
 import * as OpenCode from "./opencode.ts"
+import * as ResourceReads from "./resource-reads.ts"
 import { type Services, runtime } from "./runtime.ts"
 import type * as SessionSync from "./session-sync.ts"
 
 const encodeReply = Schema.encodeEffect(ReadReply)
-const Reply = ReadReply.cases
 
 /**
  * The gateway as the hub and the Worker's routes call it.
@@ -84,28 +83,15 @@ export class Gateway extends WorkerEntrypoint<Env> {
   }
 
   /**
-   * Reads a pull request from GitHub now, and keeps the reading of watched pull requests going.
+   * Reads a resource from its own system now, and keeps the reading of watched resources going.
    *
-   * A pull request that is missing or cannot be read is an answer, not a rejection.
+   * A resource that is missing or cannot be read is an answer, not a rejection.
    */
-  async readPullRequest(ref: typeof PullRequestRef.Encoded): Promise<typeof ReadReply.Encoded> {
+  async readResource(ref: typeof ResourceRef.Encoded): Promise<typeof ReadReply.Encoded> {
     await this.env.GITHUB_POLLER.getByName("default").ensure()
 
     return this.#run(
-      Effect.gen(function* () {
-        const github = yield* GitHub.Service
-        const pullRequest = yield* Schema.decodeEffect(PullRequestRef)(ref)
-
-        const reply = yield* github.read(pullRequest).pipe(
-          Effect.map((facts) => Reply.Read.make({ facts })),
-          Effect.catchTags({
-            PullRequestNotFound: () => Effect.succeed(Reply.NotFound.make({})),
-            GitHubUnavailable: (failure) => Effect.succeed(Reply.Unavailable.make({ message: String(failure.cause) })),
-          }),
-        )
-
-        return yield* encodeReply(reply)
-      }),
+      Schema.decodeEffect(ResourceRef)(ref).pipe(Effect.flatMap(ResourceReads.read), Effect.flatMap(encodeReply)),
     )
   }
 }

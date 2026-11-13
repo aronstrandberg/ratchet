@@ -1,13 +1,18 @@
-// A stand-in for the OpenCode service, for running Ratchet end to end without touching real sessions.
+// A stand-in for the systems outside Ratchet, for running it end to end without touching a real session,
+// issue or incident.
 //
-//   bun scripts/fake-opencode.ts [port]
+//   bun scripts/fake-outside.ts [port]
 //
-// It serves the part of OpenCode's API that the gateway uses, holds two sessions to start with, and keeps
-// what the gateway does to them. Three routes of its own drive and inspect it:
+// It serves the part of OpenCode's API that the gateway uses, with two sessions to start with, and keeps what
+// the gateway does to them. It also answers for Linear, under /linear/graphql, and for incident.io, under
+// /incident. These routes of its own drive and inspect it:
 //
-//   POST /_emit    {"type": "session.execution.started", "data": {"sessionID": "ses_smokea"}}
-//   POST /_session {"id": "ses_new", "title": "A new session"}
-//   GET  /_state   the sessions, and the messages and prompts they were sent
+//   POST /_emit     {"type": "session.execution.started", "data": {"sessionID": "ses_smokea"}}
+//   POST /_session  {"id": "ses_new", "title": "A new session"}
+//   POST /_issue    {"identifier": "DX-1", "title": "…", "state": {"name": "Done", "type": "completed"},
+//                    "assignee": null, "comments": [{"id": "c1", "author": "jifeng"}]}
+//   POST /_incident {"number": 7, "name": "…", "status": {"name": "Closed", "category": "closed"}, "severity": "Major"}
+//   GET  /_state    the sessions, and the messages and prompts they were sent
 import { Schema } from "effect"
 
 const Session = Schema.Struct({
@@ -31,6 +36,29 @@ const Patch = Schema.Struct({
 const Message = Schema.Struct({ id: Schema.optional(Schema.String), text: Schema.String })
 const Emitted = Schema.Struct({ type: Schema.String, data: Schema.Record(Schema.String, Schema.Json) })
 
+const Issue = Schema.Struct({
+  identifier: Schema.String,
+  title: Schema.String,
+  state: Schema.Struct({ name: Schema.String, type: Schema.String }),
+  assignee: Schema.NullOr(Schema.String),
+  comments: Schema.Array(Schema.Struct({ id: Schema.String, author: Schema.String })),
+})
+
+const Incident = Schema.Struct({
+  number: Schema.Number,
+  name: Schema.String,
+  status: Schema.Struct({ name: Schema.String, category: Schema.String }),
+  severity: Schema.NullOr(Schema.String),
+})
+
+const IssueQuery = Schema.Struct({ variables: Schema.Struct({ id: Schema.String }) })
+
+const issues = new Map<string, typeof Issue.Type>()
+const incidents = new Map<number, typeof Incident.Type>()
+
+const readIssue = Schema.decodeUnknownPromise(Issue)
+const readIncident = Schema.decodeUnknownPromise(Incident)
+const readIssueQuery = Schema.decodeUnknownPromise(IssueQuery)
 const readNewSession = Schema.decodeUnknownPromise(NewSession)
 const readPatch = Schema.decodeUnknownPromise(Patch)
 const readMessage = Schema.decodeUnknownPromise(Message)
@@ -79,6 +107,58 @@ Bun.serve({
     const [, api, resource, id, action] = url.pathname.split("/")
 
     if (url.pathname === "/_state") return Response.json({ sessions: [...sessions.values()], messages })
+
+    if (url.pathname === "/_issue") {
+      const issue = await readIssue(await request.json())
+      issues.set(issue.identifier, issue)
+
+      return Response.json({ issues: issues.size })
+    }
+
+    if (url.pathname === "/_incident") {
+      const incident = await readIncident(await request.json())
+      incidents.set(incident.number, incident)
+
+      return Response.json({ incidents: incidents.size })
+    }
+
+    if (url.pathname === "/linear/graphql") {
+      const viewer = { id: "u-me", displayName: "me" }
+      const issue = issues.get((await readIssueQuery(await request.json())).variables.id)
+
+      if (issue === undefined) {
+        return Response.json({ errors: [{ message: "Entity not found: Issue" }], data: { viewer, issue: null } })
+      }
+
+      return Response.json({
+        data: {
+          viewer,
+          issue: {
+            identifier: issue.identifier,
+            title: issue.title,
+            url: `https://linear.app/scratch/issue/${issue.identifier}`,
+            state: issue.state,
+            assignee: issue.assignee === null ? null : { id: `u-${issue.assignee}`, displayName: issue.assignee },
+            comments: { nodes: issue.comments.map(({ id, author }) => ({ id, user: { displayName: author } })) },
+          },
+        },
+      })
+    }
+
+    if (url.pathname.startsWith("/incident/v2/incidents/")) {
+      const incident = incidents.get(Number(url.pathname.split("/").at(-1)))
+
+      if (incident === undefined) return new Response("not found\n", { status: 404 })
+
+      return Response.json({
+        incident: {
+          name: incident.name,
+          permalink: `https://app.incident.io/scratch/incidents/${incident.number}`,
+          incident_status: incident.status,
+          severity: incident.severity === null ? null : { name: incident.severity },
+        },
+      })
+    }
 
     if (url.pathname === "/_emit") {
       emit(await readEmitted(await request.json()))
@@ -161,4 +241,4 @@ Bun.serve({
   },
 })
 
-console.log(`fake OpenCode on http://127.0.0.1:${port}`)
+console.log(`the stand-in for the outside is on http://127.0.0.1:${port}`)
