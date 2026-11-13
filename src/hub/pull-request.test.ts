@@ -71,6 +71,17 @@ test("a push starts CI over, so the new head can report a failure again", async 
   expect(seen).toEqual([[], ["HeadMoved"], ["CiFinished"]])
 })
 
+test("a head with no checks does not report that CI passed, and reports it once its checks end", async () => {
+  const seen = await observe(
+    facts({ head: "aaa" }),
+    facts({ head: "bbb" }),
+    facts({ head: "bbb", checks: [check("a", "pending")] }),
+    facts({ head: "bbb", checks: [check("a", "success")] }),
+  )
+
+  expect(seen).toEqual([[], ["HeadMoved"], [], ["CiFinished"]])
+})
+
 test("my own review and thread are not changes, and another person's are", async () => {
   const seen = await observe(
     facts(),
