@@ -19,7 +19,7 @@ holds, and put it where its kind lives:
 | Domain: pure rules and state machines | `task.ts`, `session.ts`, `pull-request.ts`, `linear-issue.ts`, `incident.ts`, `subscribers.ts`, `wake-policy.ts` | none: the gateway decides nothing |
 | Application service: an operation and the order of its effects | `tasks.ts`, `resources.ts` | `session-sync.ts`, `resource-reads.ts`, `resource-poll.ts` |
 | Port: what an operation needs from outside, in its own words | `session-control.ts`, `resource-source.ts` | `hub-reports.ts` |
-| Adapter: one technology behind a port or in front of a service | `cells.ts`, `index-store.ts`, `persistence.ts`, `gateway-binding.ts`, `mcp.ts`, `entrypoint.ts` | `opencode.ts`, `github.ts`, `linear.ts`, `incident-io.ts`, `proxy-grant.ts`, `hub-binding.ts`, `entrypoint.ts` |
+| Adapter: one technology behind a port or in front of a service | `cells.ts`, `index-store.ts`, `persistence.ts`, `gateway-binding.ts`, `mcp.ts`, `entrypoint.ts` | `opencode.ts`, `github.ts`, `linear.ts`, `incident-io.ts`, `grant.ts`, `sign-ins.ts`, `hub-binding.ts`, `entrypoint.ts` |
 | Composition root: reads `Env`, parses settings, builds the layers | `cluster.ts` | `runtime.ts`, the Durable Object classes |
 
 A service is an Effect service: `Interface`, `Service`, `make`,

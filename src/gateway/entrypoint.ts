@@ -5,10 +5,13 @@ import { forBinding } from "../failure.ts"
 import { SessionId, TaskId } from "../protocol/ids.ts"
 import { ReadReply, ResourceRef } from "../protocol/resource.ts"
 import { Wake } from "../protocol/wake.ts"
+import type * as Grant from "./grant.ts"
 import * as OpenCode from "./opencode.ts"
 import * as ResourceReads from "./resource-reads.ts"
 import { type Services, runtime } from "./runtime.ts"
 import type * as SessionSync from "./session-sync.ts"
+import * as SignIns from "./sign-ins.ts"
+import * as Systems from "./systems.ts"
 
 const encodeReply = Schema.encodeEffect(ReadReply)
 
@@ -32,22 +35,33 @@ export class Gateway extends WorkerEntrypoint<Env> {
     return this.env.OPENCODE_STREAM.getByName("default").ensure()
   }
 
+  /** Where the gateway's sign-in to each system stands. */
+  async signIns(): Promise<Readonly<Record<Systems.System, Grant.Status>>> {
+    return this.#run(Effect.flatMap(SignIns.Service, (signIns) => signIns.statuses))
+  }
+
   /**
-   * Starts a sign-in to the webhook proxy and returns the address to open in a browser. `origin` is where
-   * this Worker is reached, which is where the browser is sent back to.
+   * Starts a sign-in to a system and returns the address to open in a browser. `origin` is where this Worker
+   * is reached, which is where the browser is sent back to.
    */
-  async proxyLogin(origin: string): Promise<string> {
-    return this.env.PROXY_SIGN_IN.getByName("default").begin(`${origin}/gateway/proxy/callback`)
+  async beginSignIn(system: string, origin: string): Promise<string> {
+    return this.#run(
+      Effect.gen(function* () {
+        const signIns = yield* SignIns.Service
+
+        return yield* signIns.begin(yield* Systems.parse(system), origin)
+      }),
+    )
   }
 
-  /** Finishes a sign-in to the webhook proxy with the address the browser was sent back to. */
-  async proxyCallback(callback: string): Promise<void> {
-    await this.env.PROXY_SIGN_IN.getByName("default").complete(callback)
-  }
-
-  /** Whether the gateway is signed in to the webhook proxy. */
-  async proxySignedIn(): Promise<boolean> {
-    return this.env.PROXY_SIGN_IN.getByName("default").signedIn()
+  /** Finishes a sign-in to a system with the address the browser was sent back to. */
+  async completeSignIn(system: string, callback: string): Promise<void> {
+    await this.#run(
+      Effect.gen(function* () {
+        const signIns = yield* SignIns.Service
+        yield* signIns.complete(yield* Systems.parse(system), callback)
+      }),
+    )
   }
 
   /** Writes a session's current task into the session's metadata. */

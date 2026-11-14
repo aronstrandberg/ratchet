@@ -14,7 +14,7 @@ export { GitHubPoller } from "./gateway/github-poller.ts"
 
 export { OpenCodeStream } from "./gateway/opencode-stream.ts"
 
-export { ProxySignIn } from "./gateway/proxy-sign-in.ts"
+export { SignIn } from "./gateway/sign-in.ts"
 
 export { Hub } from "./hub/entrypoint.ts"
 
@@ -30,17 +30,25 @@ const route = async (request: Request, env: Env): Promise<Response> => {
       return Response.json((await env.HUB.resources()).filter((row) => row.kind === "pull_request"))
     case "/gateway/opencode":
       return Response.json(await env.GATEWAY.watchOpenCode())
-    case "/gateway/proxy":
-      return Response.json({ signedIn: await env.GATEWAY.proxySignedIn() })
-    case "/gateway/proxy/login":
-      return Response.json({ open: await env.GATEWAY.proxyLogin(new URL(request.url).origin) })
-    case "/gateway/proxy/callback":
-      await env.GATEWAY.proxyCallback(request.url)
-
-      return new Response("Ratchet is signed in to the webhook proxy. You can close this page.\n")
+    case "/gateway/sign-ins":
+      return Response.json(await env.GATEWAY.signIns())
     default:
-      return new Response("not found\n", { status: 404 })
+      return signIn(request, env)
   }
+}
+
+/** The two steps of a sign-in to one system: `/gateway/sign-ins/<system>/login` and `…/callback`. */
+const signIn = async (request: Request, env: Env): Promise<Response> => {
+  const url = new URL(request.url)
+  const [, system, step] = /^\/gateway\/sign-ins\/([^/]+)\/(login|callback)$/.exec(url.pathname) ?? []
+
+  if (system === undefined) return new Response("not found\n", { status: 404 })
+
+  if (step === "login") return Response.json({ open: await env.GATEWAY.beginSignIn(system, url.origin) })
+
+  await env.GATEWAY.completeSignIn(system, request.url)
+
+  return new Response(`Ratchet is signed in to ${system}. You can close this page.\n`)
 }
 
 /**
