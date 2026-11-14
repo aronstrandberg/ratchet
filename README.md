@@ -42,9 +42,9 @@ The first run creates the checkout. `scripts/dev-vars.sh` writes its
 | `GET /resources` | Returns the pull requests, Linear issues and incidents tasks follow |
 | `GET /prs` | Returns the pull requests alone |
 | `POST /mcp` | The tools sessions call |
-| `GET /gateway/proxy` | Says whether Ratchet is signed in to the webhook proxy |
-| `GET /gateway/proxy/login` | Starts a sign-in and returns the address to open in a browser |
-| `GET /gateway/proxy/callback` | Finishes the sign-in. The browser is sent here, on the machine Ratchet runs on |
+| `GET /gateway/sign-ins` | Says where Ratchet's sign-in to each system stands: `signed-out`, `pending` or `signed-in` |
+| `GET /gateway/sign-ins/<system>/login` | Starts a sign-in to `webhook-proxy`, `linear` or `incident-io`, and returns the address to open in a browser |
+| `GET /gateway/sign-ins/<system>/callback` | Finishes the sign-in. The browser is sent here, on the machine Ratchet runs on |
 
 State lives in `.celld/dev` of the service's checkout.
 

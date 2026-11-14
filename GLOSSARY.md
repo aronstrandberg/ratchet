@@ -66,5 +66,12 @@ GitHub. It reports facts and carries out what the hub asks, and decides nothing.
 **Cell**: One task, session or resource as a state machine with its own stored
 journal. _Avoid_: Actor, entity, object
 
+**System**: Something outside Ratchet that the gateway reads as me, such as
+Linear or incident.io. _Avoid_: Provider, integration
+
+**Sign-in**: The gateway's standing permission to read a system as me. I give it
+once in a browser, and the gateway renews it without me until the system ends
+it. _Avoid_: Login, credential, API key
+
 **Fact**: What the gateway tells the hub about a session, such as "started" or
 "asked a question". It carries no message content.

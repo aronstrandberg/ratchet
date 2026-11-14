@@ -1,4 +1,6 @@
 import { Option, Redacted, Result, Schema } from "effect"
+import type { Target } from "./gateway/grant.ts"
+import type { System } from "./gateway/systems.ts"
 import * as WakePolicy from "./hub/wake-policy.ts"
 
 /** A setting the service cannot start without is missing or malformed. The message holds no secret. */
@@ -44,6 +46,8 @@ export interface Gateway {
   readonly linear: Option.Option<{ readonly url: string; readonly key: Redacted.Redacted<string> }>
   /** Absent when the gateway was given no key for incident.io. */
   readonly incidentIo: Option.Option<{ readonly url: string; readonly key: Redacted.Redacted<string> }>
+  /** What the gateway signs in to for each system: the address the system protects, and the scope to ask for. */
+  readonly signIns: Readonly<Record<System, Target>>
   readonly tracing: Tracing
 }
 
@@ -87,6 +91,12 @@ export const gateway = (settings: Settings): Result.Result<Gateway, InvalidConfi
         url: settings.INCIDENT_IO_URL ?? "https://api.incident.io",
         key: Redacted.make(key),
       })),
+      signIns: {
+        "webhook-proxy": { resource: "https://lov-webhook-proxy.lovable.app/api/public/mcp", scope: "openid offline" },
+        // Reading is all the gateway does in Linear.
+        linear: { resource: "https://mcp.linear.app/mcp", scope: "read" },
+        "incident-io": { resource: "https://mcp.incident.io/mcp", scope: null },
+      },
       tracing: tracing(settings),
     }
   })

@@ -7,14 +7,16 @@ import * as HubBinding from "./hub-binding.ts"
 import * as IncidentIo from "./incident-io.ts"
 import * as Linear from "./linear.ts"
 import * as OpenCode from "./opencode.ts"
+import * as SignIns from "./sign-ins.ts"
 
-/** The gateway: its connections to OpenCode, GitHub, Linear and incident.io, and its line to the hub. */
+/** The gateway: its connections to OpenCode, GitHub, Linear and incident.io, its sign-ins, and its line to the hub. */
 const layer = (env: Env, config: Config.Gateway) =>
   Layer.mergeAll(
     OpenCode.layer(config.opencode),
     GitHub.layer(config.github),
     Option.match(config.linear, { onNone: () => Linear.layerNotConfigured, onSome: Linear.layer }),
     Option.match(config.incidentIo, { onNone: () => IncidentIo.layerNotConfigured, onSome: IncidentIo.layer }),
+    SignIns.layer(env.SIGN_IN, config.signIns),
     HubBinding.layer(env.HUB),
   ).pipe(Layer.provideMerge(Telemetry.layer(config.tracing, "ratchet-gateway")))
 
