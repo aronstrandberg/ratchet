@@ -112,7 +112,7 @@ export interface Interface {
     | Tasks.NoTask
     | AlreadyOwned
     | ResourceSource.ResourceNotFound
-    | ResourceSource.ResourceNotConfigured
+    | ResourceSource.ResourceNotSignedIn
     | ResourceSource.ResourceUnreadable
     | Failure
   >
@@ -441,10 +441,10 @@ export const make = Effect.gen(function* () {
     yield* cells.sendTask(task, TaskEvent.Attached({ resource: key, relation, session }))
 
     // The first read gives the task something to show. A resource that its own system does not have, or that
-    // the gateway has no key to read, is not followed: no later read would go better.
+    // that the gateway is not signed in to read, is not followed: the session registers it again after the sign-in.
     const observed = yield* source.read(ref).pipe(
       Effect.tapErrorTag("ResourceNotFound", () => detach(task, ref)),
-      Effect.tapErrorTag("ResourceNotConfigured", () => detach(task, ref)),
+      Effect.tapErrorTag("ResourceNotSignedIn", () => detach(task, ref)),
     )
 
     yield* observe(observed)

@@ -8,7 +8,7 @@ const Reply = ReadReply.cases
 const Observed = ResourceFacts.cases
 
 const notFound = () => Effect.succeed(Reply.NotFound.make({}))
-const notConfigured = ({ setting }: { readonly setting: string }) => Effect.succeed(Reply.NotConfigured.make({ setting }))
+const notSignedIn = ({ system }: { readonly system: string }) => Effect.succeed(Reply.NotSignedIn.make({ system }))
 const unavailable = (failure: { readonly message: string }) => Effect.succeed(Reply.Unavailable.make({ message: failure.message }))
 
 /**
@@ -16,7 +16,7 @@ const unavailable = (failure: { readonly message: string }) => Effect.succeed(Re
  * incident.io.
  *
  * A resource that is missing or cannot be read is an answer, not a failure, because the hub acts on which it
- * was.
+ * was. So is a system the gateway is not signed in to.
  */
 export const read = (
   ref: ResourceRef,
@@ -30,7 +30,7 @@ export const read = (
     LinearIssue: (issue) =>
       Effect.flatMap(Linear.Service, (linear) => linear.read(issue)).pipe(
         Effect.map((facts) => Reply.Read.make({ observed: Observed.LinearIssue.make({ facts }) })),
-        Effect.catchTags({ IssueNotFound: notFound, LinearUnavailable: unavailable, NotConfigured: notConfigured }),
+        Effect.catchTags({ IssueNotFound: notFound, LinearUnavailable: unavailable, NotSignedIn: notSignedIn }),
       ),
     Incident: (incident) =>
       Effect.flatMap(IncidentIo.Service, (incidents) => incidents.read(incident)).pipe(
@@ -38,7 +38,7 @@ export const read = (
         Effect.catchTags({
           IncidentNotFound: notFound,
           IncidentIoUnavailable: unavailable,
-          NotConfigured: notConfigured,
+          NotSignedIn: notSignedIn,
         }),
       ),
   })

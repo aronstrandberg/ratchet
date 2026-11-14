@@ -13,21 +13,31 @@ fake=$((port + 1))
 secrets="${XDG_CONFIG_HOME:-$HOME/.config}/ratchet/secrets.env"
 
 bun scripts/fake-outside.ts "$fake" &
-trap 'kill $! 2>/dev/null || true' EXIT
+outside=$!
+trap 'kill "$outside" 2>/dev/null || true' EXIT
 
 umask 077
 {
   echo "OPENCODE_URL=http://127.0.0.1:$fake"
   echo "OPENCODE_PASSWORD=none"
   echo "WAKE_SESSIONS=*"
-  echo "LINEAR_URL=http://127.0.0.1:$fake/linear/graphql"
-  echo "LINEAR_API_KEY=none"
-  echo "INCIDENT_IO_URL=http://127.0.0.1:$fake/incident"
-  echo "INCIDENT_IO_API_KEY=none"
+  echo "LINEAR_MCP_URL=http://127.0.0.1:$fake/linear/mcp"
+  echo "INCIDENT_IO_MCP_URL=http://127.0.0.1:$fake/incident/mcp"
   # Without a token the scratch Ratchet starts, and reading a pull request fails.
   if [ -f "$secrets" ]; then grep '^GITHUB_TOKEN=' "$secrets" || echo "GITHUB_TOKEN=none"; else echo "GITHUB_TOKEN=none"; fi
 } > .dev.vars
 rm -rf .celld
+
+# Signs the scratch Ratchet in to the stand-ins for Linear and incident.io once it answers. The stand-in approves
+# without asking, so following the sign-in address to the end is the whole sign-in.
+(
+  until curl --silent --fail --max-time 2 --output /dev/null "http://127.0.0.1:$port/gateway/sign-ins"; do sleep 1; done
+  for system in linear incident-io; do
+    curl --silent --location --max-time 20 --output /dev/null \
+      "$(curl --silent --max-time 20 "http://127.0.0.1:$port/gateway/sign-ins/$system/login" | jq -r .open)"
+  done
+  echo "scratch: signed in: $(curl --silent --max-time 20 "http://127.0.0.1:$port/gateway/sign-ins")"
+) &
 
 # No file watching: this machine runs close to the kernel's limit on file watches. Start it again after a change.
 CELLD_ESBUILD="$PWD/node_modules/@esbuild/linux-x64/bin/esbuild" celld dev . --port "$port" --no-watch

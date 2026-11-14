@@ -46,7 +46,7 @@ export const layer = (
           ReadReply.match({
             Read: ({ observed }) => Effect.succeed(observed),
             NotFound: () => Effect.fail(new ResourceSource.ResourceNotFound({ resource })),
-            NotConfigured: ({ setting }) => Effect.fail(new ResourceSource.ResourceNotConfigured({ resource, setting })),
+            NotSignedIn: ({ system }) => Effect.fail(new ResourceSource.ResourceNotSignedIn({ resource, system })),
             Unavailable: ({ message }) => Effect.fail(unreadable(message)),
           }),
         ),

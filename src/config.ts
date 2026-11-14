@@ -19,12 +19,10 @@ export interface Settings {
   readonly OPENCODE_URL?: string
   readonly OPENCODE_PASSWORD?: string
   readonly GITHUB_TOKEN?: string
-  readonly LINEAR_API_KEY?: string
-  /** Where Linear's GraphQL API is. Only a scratch Ratchet sets it, to a stand-in. */
-  readonly LINEAR_URL?: string
-  readonly INCIDENT_IO_API_KEY?: string
-  /** Where incident.io's API is. Only a scratch Ratchet sets it, to a stand-in. */
-  readonly INCIDENT_IO_URL?: string
+  /** Where Linear's MCP server is. Only a scratch Ratchet sets it, to a stand-in. */
+  readonly LINEAR_MCP_URL?: string
+  /** Where incident.io's MCP server is. Only a scratch Ratchet sets it, to a stand-in. */
+  readonly INCIDENT_IO_MCP_URL?: string
   readonly WAKE_SESSIONS?: string
   readonly OTLP_URL?: string
 }
@@ -42,11 +40,10 @@ export interface Hub {
 export interface Gateway {
   readonly opencode: { readonly url: string; readonly password: Redacted.Redacted<string> }
   readonly github: { readonly token: Redacted.Redacted<string> }
-  /** Absent when the gateway was given no key for Linear. Reading an issue then fails, and nothing else does. */
-  readonly linear: Option.Option<{ readonly url: string; readonly key: Redacted.Redacted<string> }>
-  /** Absent when the gateway was given no key for incident.io. */
-  readonly incidentIo: Option.Option<{ readonly url: string; readonly key: Redacted.Redacted<string> }>
-  /** What the gateway signs in to for each system: the address the system protects, and the scope to ask for. */
+  /**
+   * What the gateway signs in to for each system: the address the system protects, and the scope to ask for.
+   * For Linear and incident.io the address is their MCP server, which is also where the gateway reads them.
+   */
   readonly signIns: Readonly<Record<System, Target>>
   readonly tracing: Tracing
 }
@@ -83,19 +80,14 @@ export const gateway = (settings: Settings): Result.Result<Gateway, InvalidConfi
     return {
       opencode: { url, password: Redacted.make(password) },
       github: { token: Redacted.make(token) },
-      linear: Option.map(optional(settings.LINEAR_API_KEY), (key) => ({
-        url: settings.LINEAR_URL ?? "https://api.linear.app/graphql",
-        key: Redacted.make(key),
-      })),
-      incidentIo: Option.map(optional(settings.INCIDENT_IO_API_KEY), (key) => ({
-        url: settings.INCIDENT_IO_URL ?? "https://api.incident.io",
-        key: Redacted.make(key),
-      })),
       signIns: {
         "webhook-proxy": { resource: "https://lov-webhook-proxy.lovable.app/api/public/mcp", scope: "openid offline" },
         // Reading is all the gateway does in Linear.
-        linear: { resource: "https://mcp.linear.app/mcp", scope: "read" },
-        "incident-io": { resource: "https://mcp.incident.io/mcp", scope: null },
+        linear: { resource: Option.getOrElse(optional(settings.LINEAR_MCP_URL), () => "https://mcp.linear.app/mcp"), scope: "read" },
+        "incident-io": {
+          resource: Option.getOrElse(optional(settings.INCIDENT_IO_MCP_URL), () => "https://mcp.incident.io/mcp"),
+          scope: null,
+        },
       },
       tracing: tracing(settings),
     }

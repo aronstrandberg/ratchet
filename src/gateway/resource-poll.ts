@@ -38,7 +38,7 @@ export const round: Effect.Effect<
             Effect.catch((failure) => Effect.succeed(failure.message)),
           ),
         NotFound: () => Effect.succeed("it is gone, or the gateway cannot see it any more"),
-        NotConfigured: ({ setting }) => Effect.succeed(`${setting} is not set`),
+        NotSignedIn: ({ system }) => Effect.succeed(`Ratchet is not signed in to ${system}`),
         Unavailable: ({ message }) => Effect.succeed(message),
       }),
     )

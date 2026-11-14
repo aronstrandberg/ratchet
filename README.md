@@ -32,8 +32,15 @@ The first run creates the checkout. `scripts/dev-vars.sh` writes its
 | Secret | For |
 | --- | --- |
 | `GITHUB_TOKEN` | Reading pull requests. Required |
-| `LINEAR_API_KEY` | Reading Linear issues: a personal API key. Without it, an issue cannot be registered |
-| `INCIDENT_IO_API_KEY` | Reading incidents. Without it, an incident cannot be registered |
+
+Ratchet reads Linear and incident.io through their MCP servers, signed in as me
+with OAuth, and holds no key for either. To sign in, open the address that
+`GET /gateway/sign-ins/linear/login` answers with (or `incident-io`,
+`webhook-proxy`) in a browser. The browser is sent back to `127.0.0.1:9876`:
+when it runs on another machine, the page does not load, and requesting the
+address it shows from this machine finishes the sign-in. Ratchet renews the
+token from then on. Until someone has signed in, an issue or an incident cannot
+be registered.
 
 | Route | Does |
 | --- | --- |

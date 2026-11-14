@@ -1,4 +1,4 @@
-import { Layer, ManagedRuntime, Option, Result } from "effect"
+import { Layer, ManagedRuntime, Result } from "effect"
 import * as Config from "../config.ts"
 import type { Env } from "../env.ts"
 import * as Telemetry from "../telemetry.ts"
@@ -14,11 +14,12 @@ const layer = (env: Env, config: Config.Gateway) =>
   Layer.mergeAll(
     OpenCode.layer(config.opencode),
     GitHub.layer(config.github),
-    Option.match(config.linear, { onNone: () => Linear.layerNotConfigured, onSome: Linear.layer }),
-    Option.match(config.incidentIo, { onNone: () => IncidentIo.layerNotConfigured, onSome: IncidentIo.layer }),
-    SignIns.layer(env.SIGN_IN, config.signIns),
+    Linear.layer({ url: config.signIns.linear.resource }),
+    IncidentIo.layer({ url: config.signIns["incident-io"].resource }),
     HubBinding.layer(env.HUB),
-  ).pipe(Layer.provideMerge(Telemetry.layer(config.tracing, "ratchet-gateway")))
+  )
+    .pipe(Layer.provideMerge(SignIns.layer(env.SIGN_IN, config.signIns)))
+    .pipe(Layer.provideMerge(Telemetry.layer(config.tracing, "ratchet-gateway")))
 
 /** What an effect may require when it runs on the gateway's runtime. */
 export type Services = Layer.Success<ReturnType<typeof layer>>
