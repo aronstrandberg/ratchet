@@ -79,17 +79,35 @@ test("each renewal uses the refresh token the renewal before it issued", async (
 
       // The system honours a refresh token once, so a second renewal with the first one would be refused.
       system.expire()
-      yield* grant.expire
+      yield* grant.expire(first)
       const second = yield* grant.token
+      // A caller that was refused together with the first one says so late. The new token stays.
+      yield* grant.expire(first)
+      const kept = Redacted.value(yield* grant.token) === Redacted.value(second)
       system.expire()
-      yield* grant.expire
+      yield* grant.expire(second)
       const third = yield* grant.token
 
-      return [good(first), good(second), good(third)]
+      return [good(first), good(second), good(third), kept]
     }),
   )
 
-  expect(accepted).toEqual([false, false, true])
+  expect(accepted).toEqual([false, false, true, true])
+})
+
+test("callers that need a renewal at the same time get one renewal, not a refused second one", async () => {
+  const accepted = await Effect.runPromise(
+    Effect.gen(function* () {
+      const grant = yield* signedIn
+      system.expire()
+      yield* grant.expire(yield* grant.token)
+      const tokens = yield* Effect.all([grant.token, grant.token, grant.token], { concurrency: "unbounded" })
+
+      return tokens.map(good)
+    }),
+  )
+
+  expect(accepted).toEqual([true, true, true])
 })
 
 test("a renewal the system refuses ends the sign-in, and the next call does not ask again", async () => {
@@ -97,7 +115,7 @@ test("a renewal the system refuses ends the sign-in, and the next call does not 
     Effect.gen(function* () {
       const grant = yield* signedIn
       system.revoke()
-      yield* grant.expire
+      yield* grant.expire(yield* grant.token)
 
       return [yield* Effect.flip(grant.token), yield* Effect.flip(grant.token), yield* grant.status] as const
     }),

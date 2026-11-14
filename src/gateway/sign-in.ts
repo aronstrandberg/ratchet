@@ -25,19 +25,11 @@ const store = (storage: DurableObjectStorage): Grant.Store => {
   }
 }
 
-/** What `token` answers. A missing sign-in is an answer, because the caller acts on it. */
-export const TokenReply = Schema.TaggedUnion({
-  Token: { token: Schema.String },
-  NotSignedIn: {},
-})
-
-export type TokenReply = typeof TokenReply.Type
-
 /**
  * Holds the gateway's sign-in to one system. The object's name is the system.
  *
- * One object holds it, so two callers never renew the same token at once: a Durable Object handles one call
- * at a time. A system that issues a new refresh token with each renewal honours each one once.
+ * One object holds it, and its grant runs one operation at a time, so two callers never renew the same token
+ * at once. A system that issues a new refresh token with each renewal honours each one once.
  */
 export class SignIn extends DurableObject<Env> {
   readonly #grant = ManagedRuntime.make(Grant.layer(store(this.ctx.storage)))
@@ -59,18 +51,18 @@ export class SignIn extends DurableObject<Env> {
   }
 
   /** A token the system accepts. It leaves this object only to be sent to that system. */
-  async token(): Promise<typeof TokenReply.Encoded> {
+  async token(): Promise<typeof Grant.TokenReply.Encoded> {
     return this.#run((grant) =>
       grant.token.pipe(
-        Effect.map((token) => TokenReply.cases.Token.make({ token: Redacted.value(token) })),
-        Effect.catchTag("NotSignedIn", () => Effect.succeed(TokenReply.cases.NotSignedIn.make({}))),
+        Effect.map((token) => Grant.TokenReply.cases.Token.make({ token: Redacted.value(token) })),
+        Effect.catchTag("NotSignedIn", () => Effect.succeed(Grant.TokenReply.cases.NotSignedIn.make({}))),
       ),
     )
   }
 
-  /** Marks the access token as used up, after the system refused it. */
-  async expire(): Promise<void> {
-    await this.#run((grant) => grant.expire)
+  /** Marks a token as used up, after the system refused it. */
+  async expire(refused: string): Promise<void> {
+    await this.#run((grant) => grant.expire(Redacted.make(refused)))
   }
 
   /** Where the sign-in stands. */

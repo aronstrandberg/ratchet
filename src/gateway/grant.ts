@@ -1,4 +1,4 @@
-import { Clock, Context, Effect, Layer, Random, Redacted, Result, Schema } from "effect"
+import { Clock, Context, Effect, Layer, Random, Redacted, Result, Schema, Semaphore } from "effect"
 import { FetchHttpClient, HttpClient, HttpClientRequest, HttpClientResponse } from "effect/http"
 
 /** What the gateway signs in to: an address a system serves, and what to ask it for. */
@@ -92,6 +92,17 @@ export const statusOf = (grant: Grant): Status => {
   return grant.pending === null ? "signed-out" : "pending"
 }
 
+/**
+ * What asking for a token answers when the question crosses a binding, where a failure keeps only its message.
+ * A missing sign-in is an answer, because the caller acts on it.
+ */
+export const TokenReply = Schema.TaggedUnion({
+  Token: { token: Schema.String },
+  NotSignedIn: {},
+})
+
+export type TokenReply = typeof TokenReply.Type
+
 /** Where the grant is kept between calls. */
 export interface Store {
   readonly load: Effect.Effect<Grant, GrantFailed>
@@ -117,8 +128,11 @@ export interface Interface {
    * from then on.
    */
   readonly token: Effect.Effect<Redacted.Redacted<string>, NotSignedIn | GrantFailed>
-  /** Marks the access token as used up, after the system refused it, so that the next `token` renews it. */
-  readonly expire: Effect.Effect<void, GrantFailed>
+  /**
+   * Marks a token as used up, after the system refused it, so that the next `token` renews it. A token that
+   * was renewed since is left alone, so callers that were refused together cause one renewal.
+   */
+  readonly expire: (refused: Redacted.Redacted<string>) => Effect.Effect<void, GrantFailed>
   /** Where the sign-in stands. */
   readonly status: Effect.Effect<Status, GrantFailed>
 }
@@ -215,11 +229,18 @@ const isRefused = Schema.is(Refused)
 
 const parseUrl = Schema.decodeUnknownEffect(Schema.URLFromString)
 
-/** Builds the grant on a store and an HTTP client. Nothing is sent until an operation runs. */
+/**
+ * Builds the grant on a store and an HTTP client. Nothing is sent until an operation runs.
+ *
+ * One operation runs at a time. Two renewals at once would send the same refresh token twice, and a server
+ * that honours each one once would refuse the second and end the sign-in.
+ */
 export const make = (store: Store): Effect.Effect<Interface, never, HttpClient.HttpClient> =>
   Effect.gen(function* () {
     const plain = yield* HttpClient.HttpClient
     const http = HttpClient.filterStatusOk(plain)
+    const turn = yield* Semaphore.make(1)
+    const inTurn = Semaphore.withPermits(turn, 1)
 
     const described = <A>(url: string, schema: Schema.Codec<A, unknown>) =>
       HttpClientRequest.get(url).pipe(
@@ -382,15 +403,21 @@ export const make = (store: Store): Effect.Effect<Interface, never, HttpClient.H
       return Redacted.make(issued.success.access)
     }).pipe(Effect.withSpan("Grant.token"))
 
-    const expire = Effect.gen(function* () {
+    const expire = Effect.fn("Grant.expire")(function* (refused: Redacted.Redacted<string>) {
       const grant = yield* store.load
 
-      if (!Grant.guards.Registered(grant) || grant.tokens === null) return
+      if (!Grant.guards.Registered(grant) || grant.tokens?.access !== Redacted.value(refused)) return
 
       yield* store.save({ ...grant, tokens: { ...grant.tokens, expiresAt: 0 } })
-    }).pipe(Effect.withSpan("Grant.expire"))
+    })
 
-    return Service.of({ begin, complete, token, expire, status: Effect.map(store.load, statusOf) })
+    return Service.of({
+      begin: (target, redirect) => inTurn(begin(target, redirect)),
+      complete: (callback) => inTurn(complete(callback)),
+      token: inTurn(token),
+      expire: (refused) => inTurn(expire(refused)),
+      status: Effect.map(store.load, statusOf),
+    })
   })
 
 /** The grant on a store, still in need of an HTTP client. */
