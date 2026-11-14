@@ -1,15 +1,16 @@
-import { Context, Effect, Layer, Redacted, Schema } from "effect"
-import { FetchHttpClient, HttpClient, HttpClientRequest, HttpClientResponse } from "effect/http"
+import { Context, Effect, Layer, Schema } from "effect"
+import { FetchHttpClient, type HttpClient } from "effect/http"
 import { causeText } from "../failure.ts"
 import { IncidentCategory, type IncidentFacts, type IncidentRef } from "../protocol/incident.ts"
-import { NotConfigured } from "./not-configured.ts"
+import * as McpClient from "./mcp-client.ts"
+import type * as SignIns from "./sign-ins.ts"
 
-/** incident.io has no incident under this number, or the key cannot see it. */
+/** incident.io has no incident under this number, or my account cannot see it. */
 export class IncidentNotFound extends Schema.TaggedError<IncidentNotFound>()("IncidentNotFound", {
   number: Schema.Number,
 }) {
   override get message(): string {
-    return `incident.io has no incident INC-${this.number}, or the key cannot see it`
+    return `incident.io has no incident INC-${this.number}, or my account cannot see it`
   }
 }
 
@@ -23,10 +24,9 @@ export class IncidentIoUnavailable extends Schema.TaggedError<IncidentIoUnavaila
   }
 }
 
-/** Where incident.io's API is, and the API key the gateway reads it with. */
+/** Where incident.io's MCP server is. */
 export interface Config {
   readonly url: string
-  readonly key: Redacted.Redacted<string>
 }
 
 /** incident.io's incidents, as the gateway reads them. */
@@ -34,49 +34,59 @@ export interface Interface {
   /** Reads an incident's current state, without its summary or updates. */
   readonly read: (
     ref: IncidentRef,
-  ) => Effect.Effect<IncidentFacts, IncidentNotFound | IncidentIoUnavailable | NotConfigured>
+  ) => Effect.Effect<IncidentFacts, IncidentNotFound | IncidentIoUnavailable | SignIns.NotSignedIn>
 }
 
 /** The gateway's connection to incident.io. */
 export class Service extends Context.Service<Service, Interface>()("@ratchet/gateway/IncidentIo") {}
 
+/**
+ * The kind of status, in the words of incident.io's API. Its MCP server says `active` and `post-incident`
+ * for what the API calls `live` and `learning`.
+ */
+const Category = Schema.Union([
+  IncidentCategory,
+  Schema.Literal("active").transform("live"),
+  Schema.Literal("post-incident").transform("learning"),
+])
+
+/** What `incident_show` answers, without anything people wrote about the incident but its name. */
 const Shown = Schema.Struct({
-  incident: Schema.Struct({
-    name: Schema.String,
-    permalink: Schema.optional(Schema.String),
-    incident_status: Schema.Struct({ name: Schema.String, category: IncidentCategory }),
-    severity: Schema.optional(Schema.NullOr(Schema.Struct({ name: Schema.String }))),
-  }),
+  name: Schema.String,
+  permalink: Schema.String,
+  status: Schema.Struct({ name: Schema.String, category: Category }),
+  severity: Schema.optional(Schema.NullOr(Schema.Struct({ name: Schema.String }))),
 })
 
-/** Builds the connection on an HTTP client. Nothing is sent until a read runs. */
-export const make = (config: Config): Effect.Effect<Interface, never, HttpClient.HttpClient> =>
+/** How incident.io's tools say that they have no such incident. */
+const missing = /not.?found/i
+
+/** Builds the connection on incident.io's MCP server. Nothing is sent until a read runs. */
+export const make = (config: Config): Effect.Effect<Interface, never, HttpClient.HttpClient | SignIns.Service> =>
   Effect.gen(function* () {
-    const http = yield* HttpClient.HttpClient
+    const incidentIo = yield* McpClient.make({ url: config.url, system: "incident-io" })
 
     const read = Effect.fn("IncidentIo.read")(function* (ref: IncidentRef) {
       yield* Effect.annotateCurrentSpan("incident.number", ref.number)
 
-      // The path takes an incident's long ID, and also the number of its reference.
-      const response = yield* HttpClientRequest.get(`${config.url}/v2/incidents/${ref.number}`).pipe(
-        HttpClientRequest.bearerToken(Redacted.value(config.key)),
-        http.execute,
-        Effect.mapError((cause) => new IncidentIoUnavailable({ operation: "read", cause })),
-      )
-
-      if (response.status === 404) return yield* new IncidentNotFound({ number: ref.number })
-
-      const shown = yield* HttpClientResponse.filterStatusOk(response).pipe(
-        Effect.flatMap(HttpClientResponse.schemaBodyJson(Shown)),
-        Effect.mapError((cause) => new IncidentIoUnavailable({ operation: "read", cause })),
+      const shown = yield* incidentIo.call("incident_show", { id: `INC-${ref.number}` }, Shown).pipe(
+        Effect.catchTags({
+          McpUnavailable: ({ operation, cause }) => Effect.fail(new IncidentIoUnavailable({ operation, cause })),
+          ToolFailed: ({ tool, problem }) =>
+            Effect.fail(
+              missing.test(problem)
+                ? new IncidentNotFound({ number: ref.number })
+                : new IncidentIoUnavailable({ operation: tool, cause: problem }),
+            ),
+        }),
       )
 
       const facts: IncidentFacts = {
         ref: { number: ref.number },
-        name: shown.incident.name,
-        url: shown.incident.permalink ?? "",
-        status: shown.incident.incident_status,
-        severity: shown.incident.severity?.name ?? null,
+        name: shown.name,
+        url: shown.permalink,
+        status: shown.status,
+        severity: shown.severity?.name ?? null,
       }
 
       return facts
@@ -85,18 +95,11 @@ export const make = (config: Config): Effect.Effect<Interface, never, HttpClient
     return Service.of({ read })
   })
 
-/** The connection to incident.io, still in need of an HTTP client. */
-export const layerWithoutDependencies = (config: Config): Layer.Layer<Service, never, HttpClient.HttpClient> =>
-  Layer.effect(Service, make(config))
+/** The connection to incident.io, still in need of an HTTP client and the gateway's sign-ins. */
+export const layerWithoutDependencies = (
+  config: Config,
+): Layer.Layer<Service, never, HttpClient.HttpClient | SignIns.Service> => Layer.effect(Service, make(config))
 
-/** The connection to incident.io over `fetch`. */
-export const layer = (config: Config): Layer.Layer<Service> =>
+/** The connection to incident.io over `fetch`, still in need of the gateway's sign-ins. */
+export const layer = (config: Config): Layer.Layer<Service, never, SignIns.Service> =>
   layerWithoutDependencies(config).pipe(Layer.provide(FetchHttpClient.layer))
-
-/** A connection that fails every read, for a gateway that was given no key for incident.io. */
-export const layerNotConfigured: Layer.Layer<Service> = Layer.succeed(
-  Service,
-  Service.of({
-    read: () => Effect.fail(new NotConfigured({ setting: "INCIDENT_IO_API_KEY" })),
-  }),
-)

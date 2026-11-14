@@ -11,14 +11,14 @@ export class ResourceNotFound extends Schema.TaggedError<ResourceNotFound>()("Re
   }
 }
 
-/** The gateway has no key for the resource's own system, so it can read no resource of this kind. */
-export class ResourceNotConfigured extends Schema.TaggedError<ResourceNotConfigured>()("ResourceNotConfigured", {
+/** The gateway is not signed in to the resource's own system, so it can read no resource of this kind. */
+export class ResourceNotSignedIn extends Schema.TaggedError<ResourceNotSignedIn>()("ResourceNotSignedIn", {
   resource: ResourceKey,
-  /** The setting that would hold the key. */
-  setting: Schema.String,
+  /** The name the system's sign-in is kept under, such as `linear`. */
+  system: Schema.String,
 }) {
   override get message(): string {
-    return `${labelOfKey(this.resource)} cannot be read: ${this.setting} is not set`
+    return `${labelOfKey(this.resource)} cannot be read: Ratchet is not signed in to ${this.system}`
   }
 }
 
@@ -37,7 +37,7 @@ export interface Interface {
   /** Reads a resource now. The gateway keeps reading a resource the hub watches. */
   readonly read: (
     ref: ResourceRef,
-  ) => Effect.Effect<ResourceFacts, ResourceNotFound | ResourceNotConfigured | ResourceUnreadable>
+  ) => Effect.Effect<ResourceFacts, ResourceNotFound | ResourceNotSignedIn | ResourceUnreadable>
 }
 
 /** The hub's source of observations. */

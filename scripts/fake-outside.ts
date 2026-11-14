@@ -4,16 +4,21 @@
 //   bun scripts/fake-outside.ts [port]
 //
 // It serves the part of OpenCode's API that the gateway uses, with two sessions to start with, and keeps what
-// the gateway does to them. It also answers for Linear, under /linear/graphql, and for incident.io, under
-// /incident. These routes of its own drive and inspect it:
+// the gateway does to them. It also answers for Linear's MCP server, under /linear/mcp, and for incident.io's,
+// under /incident/mcp, behind a sign-in that it approves without asking. These routes of its own drive and
+// inspect it:
 //
 //   POST /_emit     {"type": "session.execution.started", "data": {"sessionID": "ses_smokea"}}
 //   POST /_session  {"id": "ses_new", "title": "A new session"}
 //   POST /_issue    {"identifier": "DX-1", "title": "…", "state": {"name": "Done", "type": "completed"},
 //                    "assignee": null, "comments": [{"id": "c1", "author": "jifeng"}]}
 //   POST /_incident {"number": 7, "name": "…", "status": {"name": "Closed", "category": "closed"}, "severity": "Major"}
+//   POST /_expire   withdraws every access token, so that the gateway has to renew
+//   POST /_revoke   ends every sign-in, so that someone has to sign in again
 //   GET  /_state    the sessions, and the messages and prompts they were sent
 import { Schema } from "effect"
+import * as FakeMcp from "../src/gateway/fake-mcp.ts"
+import * as FakeSignIn from "../src/gateway/fake-sign-in.ts"
 
 const Session = Schema.Struct({
   id: Schema.String,
@@ -51,14 +56,11 @@ const Incident = Schema.Struct({
   severity: Schema.NullOr(Schema.String),
 })
 
-const IssueQuery = Schema.Struct({ variables: Schema.Struct({ id: Schema.String }) })
-
 const issues = new Map<string, typeof Issue.Type>()
 const incidents = new Map<number, typeof Incident.Type>()
 
 const readIssue = Schema.decodeUnknownPromise(Issue)
 const readIncident = Schema.decodeUnknownPromise(Incident)
-const readIssueQuery = Schema.decodeUnknownPromise(IssueQuery)
 const readNewSession = Schema.decodeUnknownPromise(NewSession)
 const readPatch = Schema.decodeUnknownPromise(Patch)
 const readMessage = Schema.decodeUnknownPromise(Message)
@@ -97,6 +99,59 @@ add("ses_smokea", "Speed up the build")
 add("ses_smokeb", "Fix the flaky test")
 
 const port = Number(process.argv[2] ?? 4999)
+const signIn = FakeSignIn.make(`http://127.0.0.1:${port}`)
+
+const linear = FakeMcp.make(
+  {
+    get_issue: (input) => {
+      const issue = issues.get(String(input["id"]))
+
+      if (issue === undefined) return { problem: "Could not find referenced Issue." }
+
+      return {
+        value: {
+          id: issue.identifier,
+          title: issue.title,
+          url: `https://linear.app/scratch/issue/${issue.identifier}`,
+          status: issue.state.name,
+          statusType: issue.state.type,
+          assignee: issue.assignee,
+          assigneeId: issue.assignee === null ? null : `u-${issue.assignee}`,
+        },
+      }
+    },
+    // Linear lists the newest comment first.
+    list_comments: (input) => ({
+      value: {
+        comments: (issues.get(String(input["issueId"]))?.comments ?? [])
+          .map(({ id, author }) => ({ id, body: "…", author: { id: `u-${author}`, name: author } }))
+          .toReversed(),
+      },
+    }),
+    get_user: () => ({ value: { id: "u-me", name: "me" } }),
+  },
+  { streamed: true },
+)
+
+const incidentIo = FakeMcp.make(
+  {
+    incident_show: (input) => {
+      const incident = incidents.get(Number(String(input["id"]).replace(/^INC-/, "")))
+
+      if (incident === undefined) return { problem: "incident not found" }
+
+      return {
+        value: {
+          name: incident.name,
+          permalink: `https://app.incident.io/scratch/incidents/${incident.number}`,
+          status: incident.status,
+          severity: incident.severity === null ? null : { name: incident.severity },
+        },
+      }
+    },
+  },
+  { streamed: false },
+)
 
 Bun.serve({
   port,
@@ -122,42 +177,26 @@ Bun.serve({
       return Response.json({ incidents: incidents.size })
     }
 
-    if (url.pathname === "/linear/graphql") {
-      const viewer = { id: "u-me", displayName: "me" }
-      const issue = issues.get((await readIssueQuery(await request.json())).variables.id)
+    const signedIn = await signIn.fetch(request)
 
-      if (issue === undefined) {
-        return Response.json({ errors: [{ message: "Entity not found: Issue" }], data: { viewer, issue: null } })
-      }
+    if (signedIn !== null) return signedIn
 
-      return Response.json({
-        data: {
-          viewer,
-          issue: {
-            identifier: issue.identifier,
-            title: issue.title,
-            url: `https://linear.app/scratch/issue/${issue.identifier}`,
-            state: issue.state,
-            assignee: issue.assignee === null ? null : { id: `u-${issue.assignee}`, displayName: issue.assignee },
-            comments: { nodes: issue.comments.map(({ id, author }) => ({ id, user: { displayName: author } })) },
-          },
-        },
-      })
+    if (url.pathname === "/linear/mcp" || url.pathname === "/incident/mcp") {
+      if (!signIn.accepts(request) || request.method !== "POST") return signIn.refusal(url.pathname)
+
+      return url.pathname === "/linear/mcp" ? linear.fetch(request) : incidentIo.fetch(request)
     }
 
-    if (url.pathname.startsWith("/incident/v2/incidents/")) {
-      const incident = incidents.get(Number(url.pathname.split("/").at(-1)))
+    if (url.pathname === "/_expire") {
+      signIn.expire()
 
-      if (incident === undefined) return new Response("not found\n", { status: 404 })
+      return Response.json({ expired: true })
+    }
 
-      return Response.json({
-        incident: {
-          name: incident.name,
-          permalink: `https://app.incident.io/scratch/incidents/${incident.number}`,
-          incident_status: incident.status,
-          severity: incident.severity === null ? null : { name: incident.severity },
-        },
-      })
+    if (url.pathname === "/_revoke") {
+      signIn.revoke()
+
+      return Response.json({ revoked: true })
     }
 
     if (url.pathname === "/_emit") {
