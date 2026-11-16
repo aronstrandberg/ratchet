@@ -6,19 +6,23 @@ import { CommitBuildsEvent, CommitBuildsState, changes, commitBuildsMachine, des
 
 const minute = 60_000
 const created = 1_000_000_000
+const commit = "ab12".repeat(10)
 
-const build = (pipeline: string, state: string, failedJobs: ReadonlyArray<string> = []): Build => ({
+/** A pipeline's build of the followed commit. `over` changes which build it is, or which commit it built. */
+const build = (pipeline: string, state: string, over: Partial<Build> = {}): Build => ({
   id: `${pipeline}-1`,
   pipeline,
   number: 1,
   state,
   url: `https://buildkite.com/lovable/${pipeline}/builds/1`,
+  commit,
   createdAt: created,
-  failedJobs,
+  failedJobs: [],
+  ...over,
 })
 
 const facts = (...builds: ReadonlyArray<Build>): CommitBuildsFacts => ({
-  ref: { commit: "ab12".repeat(10) },
+  ref: { owner: "o", repo: "r", commit },
   title: "Speed up the build (#12)",
   builds,
 })
@@ -41,35 +45,54 @@ const observe = (...observations: ReadonlyArray<{ readonly at: number; readonly 
     }),
   )
 
+const failed = "Build bazel #1 failed in test: https://buildkite.com/lovable/bazel/builds/1"
+
 test("a build that fails is told once, with the jobs that had failed by then, and told again when it passes after a retry", async () => {
   const seen = await observe(
     { at: 1, facts: facts(build("bazel", "running"), build("deploy", "running")) },
-    { at: 2, facts: facts(build("bazel", "failing", ["test"]), build("deploy", "running")) },
-    { at: 3, facts: facts(build("bazel", "failed", ["test", "lint"]), build("deploy", "passed")) },
+    { at: 2, facts: facts(build("bazel", "failing", { failedJobs: ["test"] }), build("deploy", "running")) },
+    { at: 3, facts: facts(build("bazel", "failed", { failedJobs: ["test", "lint"] }), build("deploy", "passed")) },
     { at: 4, facts: facts(build("bazel", "passed"), build("deploy", "passed")) },
   )
 
+  expect(seen).toEqual([[], [failed], [], ["Build bazel #1 passed, after the pipeline's build had failed."]])
+})
+
+test("a pipeline whose failed build gives way to another is told when that one fails, and when one passes at last", async () => {
+  const rebuild = { id: "bazel-2", number: 2, url: "https://buildkite.com/lovable/bazel/builds/2" }
+
+  const seen = await observe(
+    { at: 1, facts: facts(build("bazel", "failed", { failedJobs: ["test"] })) },
+    { at: 2, facts: facts(build("bazel", "running", rebuild)) },
+    { at: 3, facts: facts(build("bazel", "failed", { ...rebuild, failedJobs: ["test"] })) },
+    { at: 4, facts: facts(build("bazel", "passed", { id: "bazel-3", number: 3 })) },
+  )
+
   expect(seen).toEqual([
+    [failed],
     [],
-    ["Build bazel #1 failed in test: https://buildkite.com/lovable/bazel/builds/1"],
-    [],
-    ["Build bazel #1 passed after all."],
+    ["Build bazel #2 failed in test: https://buildkite.com/lovable/bazel/builds/2"],
+    ["Build bazel #3 passed, after the pipeline's build had failed."],
   ])
 })
 
-test("a build that had failed before the first observation is told then, because no session read it", async () => {
-  const seen = await observe({ at: 1, facts: facts(build("bazel", "failed")) })
+test("a failed build of a later commit is told as carrying other changes too", async () => {
+  const seen = await observe({ at: 1, facts: facts(build("bazel", "failed", { commit: "cd34".repeat(10) })) })
 
-  expect(seen).toEqual([["Build bazel #1 failed: https://buildkite.com/lovable/bazel/builds/1"]])
+  expect(seen).toEqual([
+    [
+      "Build bazel #1 failed: https://buildkite.com/lovable/bazel/builds/1 It built a later commit, so it carries other changes as well as this one.",
+    ],
+  ])
 })
 
 test("the builds settle once all are over for a quarter of an hour, and are stored once more when they do", async () => {
-  const over = facts(build("bazel", "failed", ["test"]), build("deploy", "canceled"))
+  const over = facts(build("bazel", "failed", { failedJobs: ["test"] }), build("deploy", "canceled"))
 
   const seen = await observe({ at: 5, facts: over }, { at: 14, facts: over }, { at: 15, facts: over })
-  expect(seen).toEqual([["Build bazel #1 failed in test: https://buildkite.com/lovable/bazel/builds/1"], [], ["Every build is over. 1 failed."]])
+  expect(seen).toEqual([[failed], [], ["Every build is over. 1 failed."]])
 
-  const building = CommitBuildsState.Building({ title: over.title, builds: over.builds, subscribers: [] })
+  const building = CommitBuildsState.Building({ commit, title: over.title, builds: over.builds, unrecovered: ["bazel"], subscribers: [] })
   expect(repeats(building, over, created + 14 * minute)).toBe(true)
   expect(repeats(building, over, created + 15 * minute)).toBe(false)
 })

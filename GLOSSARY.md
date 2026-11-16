@@ -28,8 +28,11 @@ or `Idle`. It is derived, never set. _Avoid_: Status
 Linear issue, an incident or the builds of a commit. _Avoid_: Attachment (that
 is the link, not the thing)
 
-**Builds of a commit**: The CI builds that a commit's arrival on its branch
-started, and the builds those started. A build on a schedule and the merge
+**Builds of a commit**: The CI builds that carry a merge commit on its branch:
+for each pipeline, the first build that ran on the commit or on a later commit.
+A branch gets several commits in one push and only the last is built, and a
+pipeline skips a build while a newer one waits, so that build is often of a
+later commit and carries other changes too. A build on a schedule and the merge
 queue's build before the merge are not among them. They are settled once every
 build has been over for a while. The tasks that own a pull request follow the
 builds of its merge commit from the moment it merges. _Avoid_: Pipeline, CI run

@@ -7,7 +7,7 @@ export class ResourceNotFound extends Schema.TaggedError<ResourceNotFound>()("Re
   resource: ResourceKey,
 }) {
   override get message(): string {
-    return `${labelOfKey(this.resource)} was not found, or the gateway cannot see it`
+    return `${labelOfKey(this.resource)} cannot be found, or cannot be seen by the gateway`
   }
 }
 

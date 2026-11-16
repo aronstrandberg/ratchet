@@ -15,6 +15,7 @@
 //   POST /_incident {"number": 7, "name": "…", "status": {"name": "Closed", "category": "closed"}, "severity": "Major"}
 //   POST /_build    {"commit": "<40 hex>", "pipeline": "bazel", "number": 1, "state": "failed",
 //                    "failedJobs": ["test"]}   optional: "branch" (main), "source" (webhook), "message"
+//                   GitHub is the real one, so the commit is a merge commit there, or one that followed it.
 //   POST /_expire   withdraws every access token, so that the gateway has to renew
 //   POST /_revoke   ends every sign-in, so that someone has to sign in again
 //   GET  /_state    the sessions, and the messages and prompts they were sent

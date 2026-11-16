@@ -2,6 +2,7 @@ import { afterAll, beforeEach, expect, test } from "bun:test"
 import { Effect, Layer, Redacted } from "effect"
 import { ReadReply, ResourceFacts, ResourceRef } from "../protocol/resource.ts"
 import * as Buildkite from "./buildkite.ts"
+import * as CommitBuilds from "./commit-builds.ts"
 import * as FakeMcp from "./fake-mcp.ts"
 import * as GitHub from "./github.ts"
 import * as IncidentIo from "./incident-io.ts"
@@ -166,14 +167,27 @@ const signIns = (tokens: ReadonlyArray<string>) => {
   )
 }
 
+/** GitHub, for a commit that is the only one of its push. Nothing in these tests reads a pull request. */
+const github = Layer.succeed(
+  GitHub.Service,
+  GitHub.Service.of({
+    read: (pullRequest) => Effect.fail(new GitHub.PullRequestNotFound(pullRequest)),
+    landing: (merged) => Effect.succeed({ title: "Speed up the build (#12)", branch: "main", commits: [merged.commit] }),
+  }),
+)
+
 /** The gateway's connections to Linear, incident.io and Buildkite, on the stand-in and the tokens given. */
 const outside = (tokens: ReadonlyArray<string>) =>
   Layer.mergeAll(
-    GitHub.layer({ token: Redacted.make("unused") }),
     Linear.layer({ url: `http://127.0.0.1:${server.port}/linear/mcp` }),
     IncidentIo.layer({ url: `http://127.0.0.1:${server.port}/incident/mcp` }),
-    Buildkite.layer({ url: `http://127.0.0.1:${server.port}/buildkite/mcp`, organization: "lovable", settle: 0 }),
-  ).pipe(Layer.provide(signIns(tokens)))
+    CommitBuilds.layerWithoutDependencies({ settle: 0, fresh: 0 }),
+  ).pipe(
+    Layer.provideMerge(
+      Layer.mergeAll(github, Buildkite.layer({ url: `http://127.0.0.1:${server.port}/buildkite/mcp`, organization: "lovable" })),
+    ),
+    Layer.provide(signIns(tokens)),
+  )
 
 const read = (ref: ResourceRef, tokens: ReadonlyArray<string> = ["good"]) =>
   Effect.runPromise(ResourceReads.read(ref).pipe(Effect.provide(outside(tokens))))
@@ -261,14 +275,15 @@ test("an incident is read by its reference, in the API's words for its status, a
   expect(missing).toEqual(ReadReply.cases.NotFound.make({}))
 })
 
-test("the builds of a commit are the ones its arrival started: not one on a schedule, not the merge queue's", async () => {
-  const reply = await read(ResourceRef.cases.CommitBuilds.make({ commit }))
+test("the builds that carry a commit leave out a build on a schedule and the merge queue's, and name the failed jobs", async () => {
+  const merged = { owner: "lovablelabs", repo: "lovable", commit }
+  const reply = await read(ResourceRef.cases.CommitBuilds.make(merged))
 
   expect(reply).toEqual(
     ReadReply.cases.Read.make({
       observed: ResourceFacts.cases.CommitBuilds.make({
         facts: {
-          ref: { commit },
+          ref: merged,
           title: "Speed up the build (#12)",
           builds: [
             {
@@ -277,6 +292,7 @@ test("the builds of a commit are the ones its arrival started: not one on a sche
               number: 2,
               state: "failed",
               url: "https://buildkite.com/lovable/bazel/builds/2",
+              commit,
               createdAt: Date.parse("2026-11-16T10:00:02.000Z"),
               failedJobs: ["bazel-test", "Lint"],
             },
@@ -286,6 +302,7 @@ test("the builds of a commit are the ones its arrival started: not one on a sche
               number: 3,
               state: "running",
               url: "https://buildkite.com/lovable/deploy/builds/3",
+              commit,
               createdAt: Date.parse("2026-11-16T10:00:03.000Z"),
               failedJobs: [],
             },
@@ -296,8 +313,8 @@ test("the builds of a commit are the ones its arrival started: not one on a sche
   )
 })
 
-test("a commit that started no build is answered as not found", async () => {
-  expect(await read(ResourceRef.cases.CommitBuilds.make({ commit: "cd34".repeat(10) }))).toEqual(
-    ReadReply.cases.NotFound.make({}),
-  )
+test("a commit that no build carries is answered as not found", async () => {
+  const unbuilt = ResourceRef.cases.CommitBuilds.make({ owner: "lovablelabs", repo: "lovable", commit: "cd34".repeat(10) })
+
+  expect(await read(unbuilt)).toEqual(ReadReply.cases.NotFound.make({}))
 })

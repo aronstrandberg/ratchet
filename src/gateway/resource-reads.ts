@@ -1,6 +1,6 @@
 import { Effect } from "effect"
 import { ReadReply, ResourceFacts, ResourceRef } from "../protocol/resource.ts"
-import * as Buildkite from "./buildkite.ts"
+import * as CommitBuilds from "./commit-builds.ts"
 import * as GitHub from "./github.ts"
 import * as IncidentIo from "./incident-io.ts"
 import * as Linear from "./linear.ts"
@@ -14,14 +14,14 @@ const unavailable = (failure: { readonly message: string }) => Effect.succeed(Re
 
 /**
  * Reads a resource from its own system: a pull request from GitHub, an issue from Linear, an incident from
- * incident.io, the builds of a commit from Buildkite.
+ * incident.io, the builds that carry a commit from GitHub and Buildkite together.
  *
  * A resource that is missing or cannot be read is an answer, not a failure, because the hub acts on which it
  * was. So is a system the gateway is not signed in to.
  */
 export const read = (
   ref: ResourceRef,
-): Effect.Effect<ReadReply, never, GitHub.Service | Linear.Service | IncidentIo.Service | Buildkite.Service> =>
+): Effect.Effect<ReadReply, never, GitHub.Service | Linear.Service | IncidentIo.Service | CommitBuilds.Service> =>
   ResourceRef.match(ref, {
     PullRequest: (pullRequest) =>
       Effect.flatMap(GitHub.Service, (github) => github.read(pullRequest)).pipe(
@@ -43,8 +43,14 @@ export const read = (
         }),
       ),
     CommitBuilds: (commit) =>
-      Effect.flatMap(Buildkite.Service, (buildkite) => buildkite.read(commit)).pipe(
+      Effect.flatMap(CommitBuilds.Service, (builds) => builds.read(commit)).pipe(
         Effect.map((facts) => Reply.Read.make({ observed: Observed.CommitBuilds.make({ facts }) })),
-        Effect.catchTags({ BuildsNotFound: notFound, BuildkiteUnavailable: unavailable, NotSignedIn: notSignedIn }),
+        Effect.catchTags({
+          NoBuilds: notFound,
+          CommitNotMerged: notFound,
+          GitHubUnavailable: unavailable,
+          BuildkiteUnavailable: unavailable,
+          NotSignedIn: notSignedIn,
+        }),
       ),
   })
