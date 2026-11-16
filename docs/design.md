@@ -301,7 +301,8 @@ provider. The second iteration adds the GitHub adapter.
 | Index | D1 table written after each task change. `GET /tree` returns the forest |
 | Session tools | The hub serves MCP at `/mcp` with Effect's `McpServer`, request-scoped, over the 2026-07-28 protocol. Task tools: `task_current`, `task_start`, `task_fork`, `subagent_declare`. Pull request tools: `pr_register`, `pr_set_status`, `pr_list`, `pr_unregister`. A tool takes the calling session from the request metadata OpenCode sends |
 | Pull requests | A session attaches a pull request to its task with a relation: `owns`, `waits_on` or `context`. A `PullRequest` cell holds what GitHub last said and which tasks follow it. `src/hub/pull-request.ts` turns two observations into typed changes, with CI reporting at most its first failure and its end per head. A pull request stays with its task when the session starts another one: a session remembers its earlier tasks, and the `pr_*` tools look through all of them |
-| GitHub adapter | `src/gateway/github.ts` reads a pull request in one GraphQL call, with a classic token. A Durable Object reads every followed, open pull request once a minute. It stands in for the webhook proxy stream |
+| GitHub adapter | `src/gateway/github.ts` reads a pull request in one GraphQL call, with a classic token. A Durable Object reads every followed, open pull request once a minute |
+| Webhook proxy stream | The gateway listens to the webhook proxy for the watched pull requests of `lovablelabs/lovable`, with the token of its sign-in. `src/gateway/webhook-proxy.ts` is one connection, as typed frames. `src/gateway/live-reads.ts` holds a stream per 20 pull requests, opens it again when it ends or when the watched pull requests change, and takes it up after the last frame it heard. A frame has its pull request read from GitHub five seconds later. A check that passed has it read 45 seconds later, because it matters only when it is the last one. A gap has every pull request of the stream read. The minute's reading goes on for everything the proxy does not cover, and reads a covered pull request every third minute: a commit status names no pull request, and a frame can be missed. `GET /gateway/webhooks` says which pull requests are covered and what stops the listening |
 | Wake-ups | A change that a task can act on becomes a message in the task's outbox. The hub hands it to the gateway, which admits it to the session as a synthetic message, and the message leaves the outbox once OpenCode has it. `WAKE_SESSIONS` limits which sessions are woken, and is empty by default |
 | Work status | `pr_set_status` records what a session says about its work on a pull request. `waiting-user` turns the task to `NeedsMe`, until the pull request merges or closes: an attachment records how its resource ended, and its status no longer counts after that |
 | Checks | oxlint with the vendored anti-slop rules, rumdl, `tsc` and the tests, run by lefthook before each commit. The standards are the skills in `.agents/skills` |
@@ -339,9 +340,13 @@ Differences from the design above, found while building:
   a session registers it.
 - No `ghprs` registration existed on this machine when the `pr_*` tools replaced
   those tools, so nothing was imported.
-- The poller reads each pull request in full every minute, one after the other.
-  That is 60 GraphQL calls an hour for each pull request, against a limit of
-  5,000 points an hour.
+- The poller reads each pull request in full, one after the other: every minute,
+  or every third minute for one the webhook proxy covers. That is 60 or 20
+  GraphQL calls an hour for each pull request, against a limit of 5,000 points
+  an hour.
+- A frame names the event and not the check, so the gateway cannot tell the last
+  passed check from the others. A pull request whose checks are passing is read
+  every 45 seconds at most.
 - GitHub answers the first read of a pull request with mergeability `unknown`.
   The gateway reads once more after two seconds.
 - The first observation of a pull request reports no changes. A session that

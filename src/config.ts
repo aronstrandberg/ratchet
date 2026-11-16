@@ -29,6 +29,10 @@ export interface Settings {
   readonly BUILDKITE_ORGANIZATION?: string
   /** Where the Spacelift account is, such as `https://lovable.app.spacelift.io`. A scratch Ratchet sets it to a stand-in. */
   readonly SPACELIFT_URL?: string
+  /** Where the webhook proxy is. Only a scratch Ratchet sets it, to a stand-in. */
+  readonly WEBHOOK_PROXY_URL?: string
+  /** The repositories whose GitHub events reach the webhook proxy, as `owner/repo` separated by commas. */
+  readonly WEBHOOK_PROXY_REPOS?: string
   readonly WAKE_SESSIONS?: string
   readonly OTLP_URL?: string
 }
@@ -54,6 +58,8 @@ export interface Gateway {
   readonly buildkite: { readonly organization: string }
   /** Where the Spacelift account is. Its GraphQL API is under `/graphql` there. */
   readonly spacelift: { readonly url: string }
+  /** Where the webhook proxy is, and the repositories whose events reach it, in lower case. */
+  readonly proxy: { readonly url: string; readonly repos: ReadonlyArray<string> }
   readonly tracing: Tracing
 }
 
@@ -86,12 +92,15 @@ export const gateway = (settings: Settings): Result.Result<Gateway, InvalidConfi
     const password = yield* required(settings, "OPENCODE_PASSWORD")
     const token = yield* required(settings, "GITHUB_TOKEN")
     const spacelift = Option.getOrElse(optional(settings.SPACELIFT_URL), () => "https://lovable.app.spacelift.io")
+    const proxy = Option.getOrElse(optional(settings.WEBHOOK_PROXY_URL), () => "https://lov-webhook-proxy.lovable.app")
+    const proxyRepos = Option.getOrElse(optional(settings.WEBHOOK_PROXY_REPOS), () => "lovablelabs/lovable")
 
     return {
       opencode: { url, password: Redacted.make(password) },
       github: { token: Redacted.make(token) },
       signIns: {
-        "webhook-proxy": { resource: "https://lov-webhook-proxy.lovable.app/api/public/mcp", scope: "openid offline" },
+        // The proxy admits Lovable staff, and learns who that is from the account's email.
+        "webhook-proxy": { resource: `${proxy}/api/public/mcp`, scope: "openid email offline" },
         // Reading is all the gateway does in Linear.
         linear: { resource: Option.getOrElse(optional(settings.LINEAR_MCP_URL), () => "https://mcp.linear.app/mcp"), scope: "read" },
         "incident-io": {
@@ -108,6 +117,10 @@ export const gateway = (settings: Settings): Result.Result<Gateway, InvalidConfi
       },
       buildkite: { organization: Option.getOrElse(optional(settings.BUILDKITE_ORGANIZATION), () => "lovable") },
       spacelift: { url: spacelift },
+      proxy: {
+        url: proxy,
+        repos: proxyRepos.split(",").flatMap((repo) => (repo.trim() === "" ? [] : [repo.trim().toLowerCase()])),
+      },
       tracing: tracing(settings),
     }
   })

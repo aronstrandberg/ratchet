@@ -3,6 +3,7 @@ import type { Gateway } from "./gateway/entrypoint.ts"
 import type { GitHubPoller } from "./gateway/github-poller.ts"
 import type { OpenCodeStream } from "./gateway/opencode-stream.ts"
 import type { SignIn } from "./gateway/sign-in.ts"
+import type { WebhookStream } from "./gateway/webhook-stream.ts"
 import type { Hub } from "./hub/entrypoint.ts"
 
 /** What the runtime hands the Worker: its bindings and its settings. Only composition roots read it. */
@@ -14,6 +15,7 @@ export interface Env extends Settings {
   readonly OPENCODE_STREAM: DurableObjectNamespace<OpenCodeStream>
   readonly GITHUB_POLLER: DurableObjectNamespace<GitHubPoller>
   readonly SIGN_IN: DurableObjectNamespace<SignIn>
+  readonly WEBHOOK_STREAM: DurableObjectNamespace<WebhookStream>
   readonly HUB: Service<Hub>
   readonly GATEWAY: Service<Gateway>
   readonly INDEX: D1Database

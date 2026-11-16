@@ -1,5 +1,5 @@
 import { Effect } from "effect"
-import { ReadReply, labelOf } from "../protocol/resource.ts"
+import { ReadReply, type ResourceRef, keyOf, labelOf } from "../protocol/resource.ts"
 import type * as CommitBuilds from "./commit-builds.ts"
 import type * as CommitRuns from "./commit-runs.ts"
 import type * as GitHub from "./github.ts"
@@ -15,22 +15,25 @@ export interface Round {
   readonly failed: number
 }
 
-/**
- * Reads every resource the hub watches, reports each observation, and asks the hub to try its undelivered
- * wake-ups again.
- *
- * One resource that cannot be read does not stop the others from being read.
- */
-export const round: Effect.Effect<
-  Round,
-  HubReports.HubUnavailable,
-  GitHub.Service | Linear.Service | IncidentIo.Service | CommitBuilds.Service | CommitRuns.Service | HubReports.Service
-> = Effect.gen(function* () {
-  const hub = yield* HubReports.Service
-  const refs = yield* hub.watchedResources
-  let failed = 0
+/** What reading a resource needs: the gateway's connection to each system, and its line to the hub. */
+export type Readers =
+  | GitHub.Service
+  | Linear.Service
+  | IncidentIo.Service
+  | CommitBuilds.Service
+  | CommitRuns.Service
+  | HubReports.Service
 
-  for (const ref of refs) {
+/**
+ * Reads one resource from its own system and reports the observation to the hub.
+ *
+ * It answers whether that worked. A resource that cannot be read or reported is logged, and whoever asked
+ * reads it again later.
+ */
+export const follow = (ref: ResourceRef): Effect.Effect<boolean, never, Readers> =>
+  Effect.gen(function* () {
+    const hub = yield* HubReports.Service
+
     const problem = yield* Effect.flatMap(
       ResourceReads.read(ref),
       ReadReply.match({
@@ -45,13 +48,29 @@ export const round: Effect.Effect<
       }),
     )
 
-    if (problem !== null) {
-      failed++
-      yield* Effect.logWarning(`could not follow ${labelOf(ref)}: ${problem}`)
+    if (problem !== null) yield* Effect.logWarning(`could not follow ${labelOf(ref)}: ${problem}`)
+
+    return problem === null
+  })
+
+/**
+ * Reads every resource the hub watches, reports each observation, and asks the hub to try its undelivered
+ * wake-ups again.
+ *
+ * A resource whose key is in `heard` is left out: the webhook proxy tells the gateway when it changes, and
+ * the gateway reads it then. One resource that cannot be read does not stop the others from being read.
+ */
+export const round = (heard: ReadonlySet<string>): Effect.Effect<Round, HubReports.HubUnavailable, Readers> =>
+  Effect.gen(function* () {
+    const hub = yield* HubReports.Service
+    const refs = (yield* hub.watchedResources).filter((ref) => !heard.has(keyOf(ref)))
+    let failed = 0
+
+    for (const ref of refs) {
+      if (!(yield* follow(ref))) failed++
     }
-  }
 
-  yield* hub.deliverWakes
+    yield* hub.deliverWakes
 
-  return { watched: refs.length, failed }
-}).pipe(Effect.withSpan("ResourcePoll.round"))
+    return { watched: refs.length, failed }
+  }).pipe(Effect.withSpan("ResourcePoll.round"))
