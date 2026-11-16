@@ -48,6 +48,7 @@ const query = `query($owner: String!, $repo: String!, $number: Int!) {
   repository(owner: $owner, name: $repo) {
     pullRequest(number: $number) {
       title state isDraft mergeable reviewDecision headRefOid
+      mergeCommit { oid }
       mergeQueueEntry { state }
       commits(last: 1) { nodes { commit { statusCheckRollup { contexts(first: 100) {
         pageInfo { hasNextPage }
@@ -98,6 +99,7 @@ const Response = Schema.Struct({
                 mergeable: Schema.Literals(["MERGEABLE", "CONFLICTING", "UNKNOWN"]),
                 reviewDecision: Schema.NullOr(Schema.Literals(["APPROVED", "CHANGES_REQUESTED", "REVIEW_REQUIRED"])),
                 headRefOid: Schema.String,
+                mergeCommit: Schema.NullOr(Schema.Struct({ oid: Schema.String })),
                 mergeQueueEntry: Schema.NullOr(Schema.Struct({ state: Schema.String })),
                 commits: Schema.Struct({
                   nodes: Schema.Array(
@@ -185,6 +187,7 @@ export const make = (config: Config): Effect.Effect<Interface, never, HttpClient
         state: lower(pr.state),
         draft: pr.isDraft,
         head: pr.headRefOid,
+        mergeCommit: pr.mergeCommit?.oid ?? null,
         mergeable: lower(pr.mergeable),
         reviewDecision: pr.reviewDecision === null ? null : lower(pr.reviewDecision),
         queued: pr.mergeQueueEntry !== null,

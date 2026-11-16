@@ -1,4 +1,4 @@
-import { Schema } from "effect"
+import { Effect, Schema } from "effect"
 
 /** A pull request as GitHub addresses it. */
 export const PullRequestRef = Schema.Struct({
@@ -52,6 +52,8 @@ export const PullRequestFacts = Schema.Struct({
   draft: Schema.Boolean,
   /** The head commit. */
   head: Schema.String,
+  /** The commit a merged pull request became on its base branch, or null for one that is not merged. */
+  mergeCommit: Schema.NullOr(Schema.String).pipe(Schema.withDecodingDefaultKey(Effect.succeed(null))),
   mergeable: Schema.Literals(["mergeable", "conflicting", "unknown"]),
   reviewDecision: Schema.NullOr(Schema.Literals(["approved", "changes_requested", "review_required"])),
   queued: Schema.Boolean,
