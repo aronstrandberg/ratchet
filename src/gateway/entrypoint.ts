@@ -6,6 +6,7 @@ import { SessionId, TaskId } from "../protocol/ids.ts"
 import { ReadReply, ResourceRef } from "../protocol/resource.ts"
 import { Wake } from "../protocol/wake.ts"
 import type * as Grant from "./grant.ts"
+import type * as LiveReads from "./live-reads.ts"
 import * as OpenCode from "./opencode.ts"
 import * as ResourceReads from "./resource-reads.ts"
 import { type Services, runtime } from "./runtime.ts"
@@ -33,6 +34,11 @@ export class Gateway extends WorkerEntrypoint<Env> {
   /** Makes sure the gateway listens to OpenCode, and reports the connection. */
   async watchOpenCode(): Promise<SessionSync.Status> {
     return this.env.OPENCODE_STREAM.getByName("default").ensure()
+  }
+
+  /** Makes sure the gateway listens to the webhook proxy, and reports how the listening is doing. */
+  async watchWebhooks(): Promise<LiveReads.Status> {
+    return this.env.WEBHOOK_STREAM.getByName("default").ensure()
   }
 
   /** Where the gateway's sign-in to each system stands. */
@@ -103,6 +109,7 @@ export class Gateway extends WorkerEntrypoint<Env> {
    */
   async readResource(ref: typeof ResourceRef.Encoded): Promise<typeof ReadReply.Encoded> {
     await this.env.GITHUB_POLLER.getByName("default").ensure()
+    await this.env.WEBHOOK_STREAM.getByName("default").ensure()
 
     return this.#run(
       Schema.decodeEffect(ResourceRef)(ref).pipe(Effect.flatMap(ResourceReads.read), Effect.flatMap(encodeReply)),

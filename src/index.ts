@@ -16,6 +16,8 @@ export { OpenCodeStream } from "./gateway/opencode-stream.ts"
 
 export { SignIn } from "./gateway/sign-in.ts"
 
+export { WebhookStream } from "./gateway/webhook-stream.ts"
+
 export { Hub } from "./hub/entrypoint.ts"
 
 const route = async (request: Request, env: Env): Promise<Response> => {
@@ -30,6 +32,8 @@ const route = async (request: Request, env: Env): Promise<Response> => {
       return Response.json((await env.HUB.resources()).filter((row) => row.kind === "pull_request"))
     case "/gateway/opencode":
       return Response.json(await env.GATEWAY.watchOpenCode())
+    case "/gateway/webhooks":
+      return Response.json(await env.GATEWAY.watchWebhooks())
     case "/gateway/sign-ins":
       return Response.json(await env.GATEWAY.signIns())
     default:

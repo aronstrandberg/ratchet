@@ -12,6 +12,7 @@ import * as Linear from "./linear.ts"
 import * as OpenCode from "./opencode.ts"
 import * as SignIns from "./sign-ins.ts"
 import * as Spacelift from "./spacelift.ts"
+import * as WebhookProxy from "./webhook-proxy.ts"
 
 /** The gateway: its connections to OpenCode, GitHub, Linear, incident.io, Buildkite and Spacelift, its sign-ins, and its line to the hub. */
 const layer = (env: Env, config: Config.Gateway) =>
@@ -21,6 +22,7 @@ const layer = (env: Env, config: Config.Gateway) =>
     IncidentIo.layer({ url: config.signIns["incident-io"].resource }),
     CommitBuilds.layerWithoutDependencies({ settle: "5 seconds", fresh: "20 seconds" }),
     CommitRuns.layerWithoutDependencies({ settle: "5 seconds" }),
+    WebhookProxy.layer(config.proxy),
     HubBinding.layer(env.HUB),
   )
     .pipe(

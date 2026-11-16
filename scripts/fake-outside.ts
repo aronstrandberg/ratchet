@@ -6,8 +6,8 @@
 // It serves the part of OpenCode's API that the gateway uses, with two sessions to start with, and keeps what
 // the gateway does to them. It also answers for the MCP servers of Linear, under /linear/mcp, of incident.io,
 // under /incident/mcp, and of Buildkite, under /buildkite/mcp, and for Spacelift's GraphQL API, under
-// /spacelift/graphql, behind a sign-in that it approves without asking. These routes of its own drive and
-// inspect it:
+// /spacelift/graphql, and for the webhook proxy's stream, under /proxy/api/public/streams, behind a sign-in
+// that it approves without asking. These routes of its own drive and inspect it:
 //
 //   POST /_emit     {"type": "session.execution.started", "data": {"sessionID": "ses_smokea"}}
 //   POST /_session  {"id": "ses_new", "title": "A new session"}
@@ -20,6 +20,8 @@
 //   POST /_run      {"id": "r1", "stack": "iam", "commit": "<40 hex>", "type": "TRACKED", "state": "UNCONFIRMED"}
 //                   optional: "needsApproval", "delta". A PROPOSED run of a commit of the pull request names a
 //                   stack that planned it. GitHub is the real one here too.
+//   POST /_frame    {"repo": "lovablelabs/lovable", "prs": [12], "event_type": "check_run", "conclusion": "failure"}
+//                   a frame of the webhook proxy: the gateway then reads the pull request from the real GitHub
 //   POST /_expire   withdraws every access token, so that the gateway has to renew
 //   POST /_revoke   ends every sign-in, so that someone has to sign in again
 //   GET  /_state    the sessions, and the messages and prompts they were sent
@@ -27,6 +29,7 @@ import { Schema } from "effect"
 import * as FakeMcp from "../src/gateway/fake-mcp.ts"
 import * as FakeSignIn from "../src/gateway/fake-sign-in.ts"
 import * as FakeSpacelift from "../src/gateway/fake-spacelift.ts"
+import * as FakeWebhookProxy from "../src/gateway/fake-webhook-proxy.ts"
 
 const Session = Schema.Struct({
   id: Schema.String,
@@ -79,6 +82,9 @@ const Build = Schema.Struct({
 /** The builds, by pipeline and number, each with when it was first put here. */
 const builds = new Map<string, typeof Build.Type & { readonly createdAt: string }>()
 const readBuild = Schema.decodeUnknownPromise(Build)
+
+const readFrame = Schema.decodeUnknownPromise(FakeWebhookProxy.Sent)
+const webhooks = FakeWebhookProxy.make({ heartbeat: 15_000 })
 
 /** The runs, by ID, each with when it was first put here and when it last changed. */
 const runs = new Map<string, FakeSpacelift.Run>()
@@ -250,6 +256,13 @@ Bun.serve({
 
       return system.fetch(request)
     }
+
+    // The proxy's sign-in is for its MCP address, and its stream takes the same token.
+    if (url.pathname === "/proxy/api/public/mcp") return signIn.refusal(url.pathname)
+
+    if (url.pathname === "/proxy/api/public/streams") return webhooks.fetch(request, signIn.accepts(request))
+
+    if (url.pathname === "/_frame") return Response.json({ id: webhooks.emit(await readFrame(await request.json())) })
 
     // Spacelift protects its whole address, and answers its API whatever the token.
     if (url.pathname === "/spacelift") return signIn.refusal(url.pathname)

@@ -11,7 +11,8 @@
       { "name": "CLUSTER_SINGLETON", "class_name": "ClusterSingleton" },
       { "name": "OPENCODE_STREAM", "class_name": "OpenCodeStream" },
       { "name": "GITHUB_POLLER", "class_name": "GitHubPoller" },
-      { "name": "SIGN_IN", "class_name": "SignIn" }
+      { "name": "SIGN_IN", "class_name": "SignIn" },
+      { "name": "WEBHOOK_STREAM", "class_name": "WebhookStream" }
     ]
   },
   "migrations": [
@@ -22,7 +23,8 @@
     { "tag": "v2", "new_sqlite_classes": ["OpenCodeStream"] },
     { "tag": "v3", "new_sqlite_classes": ["GitHubPoller"] },
     { "tag": "v4", "new_sqlite_classes": ["ProxySignIn"] },
-    { "tag": "v5", "new_sqlite_classes": ["SignIn"] }
+    { "tag": "v5", "new_sqlite_classes": ["SignIn"] },
+    { "tag": "v6", "new_sqlite_classes": ["WebhookStream"] }
   ],
   // celld dev runs one script, so the hub and the gateway are two entrypoints of it.
   "services": [
