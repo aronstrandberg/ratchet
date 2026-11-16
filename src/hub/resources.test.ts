@@ -27,6 +27,7 @@ const pullRequest: PullRequestFacts = {
   state: "open",
   draft: false,
   head: "aaaaaaaaaaaa",
+  mergeCommit: null,
   mergeable: "mergeable",
   reviewDecision: null,
   queued: false,
@@ -345,6 +346,69 @@ test("the owner of a commit's builds is woken when one fails, told what the comm
       const settled = yield* resources.observe(builds("failed", 16, ["test"]))
       expect(settled).toEqual({ changes: ["Settled"], woke: 0 })
       expect((yield* resources.list(session)).resources).toMatchObject([{ ended: "completed" }])
+      expect(yield* resources.watched).toEqual([])
+    }),
+  ))
+
+test("the builds of a pull request's merge commit are followed by its owner once it merges, and by nobody who waits on it", () =>
+  run(
+    Effect.gen(function* () {
+      const { pullRequests: resources, outside, tasks } = yield* setUp()
+      const waiting = SessionId.make("ses_2")
+
+      yield* tasks.observe([
+        SessionFact.cases.Opened.make({
+          session: waiting,
+          title: "Ship after the build is faster",
+          origin: SessionOrigin.cases.Root.make({}),
+          running: false,
+          subagents: [],
+          questions: [],
+        }),
+      ])
+      yield* resources.register(session, ref, "owns")
+      yield* resources.register(waiting, ref, "waits_on")
+      yield* outside.publish(builds("running"))
+
+      yield* resources.observe(facts({ state: "merged", mergeCommit: commit }))
+      expect((yield* resources.list(session)).resources).toMatchObject([
+        { resource: "o/r#1", relation: "owns" },
+        { resource: `builds:${commit}`, relation: "owns" },
+      ])
+      expect((yield* resources.list(waiting)).resources).toMatchObject([{ resource: "o/r#1" }])
+      expect(yield* resources.watched).toEqual([buildsRef])
+
+      const failed = yield* resources.observe(builds("failed", 1, ["test"]))
+      expect(failed).toEqual({ changes: ["BuildFailed"], woke: 1 })
+      expect((yield* outside.wakes).map((wake) => [wake.session, wake.text.split("\n")[1]])).toEqual([
+        [session, "- It merged."],
+        [waiting, "- It merged."],
+        [session, "- Build bazel #1 failed in test: https://buildkite.com/lovable/bazel/builds/1"],
+      ])
+    }),
+  ))
+
+test("a merge commit that started no build, and a pull request that was merged before anyone followed it, add nothing to follow", () =>
+  run(
+    Effect.gen(function* () {
+      // The pull request is merged already when the session registers it, and its commit has builds.
+      const { pullRequests: resources, outside } = yield* setUp("Speed up the build", facts({ state: "merged", mergeCommit: commit }))
+      yield* outside.publish(builds("failed"))
+      yield* resources.register(session, ref, "owns")
+      expect((yield* resources.list(session)).resources).toMatchObject([{ resource: "o/r#1" }])
+
+      // Another pull request merges while it is followed, in a repository without CI.
+      const other = { owner: "o", repo: "other", number: 2 }
+      const open = ResourceFacts.cases.PullRequest.make({ facts: { ...pullRequest, ref: other } })
+      yield* outside.publish(open)
+      yield* resources.register(session, ResourceRef.cases.PullRequest.make(other), "owns")
+
+      const merged = yield* resources.observe(
+        ResourceFacts.cases.PullRequest.make({ facts: { ...pullRequest, ref: other, state: "merged", mergeCommit: "cd34".repeat(10) } }),
+      )
+
+      expect(merged).toEqual({ changes: ["Merged"], woke: 1 })
+      expect((yield* resources.list(session)).resources).toMatchObject([{ resource: "o/r#1" }, { resource: "o/other#2" }])
       expect(yield* resources.watched).toEqual([])
     }),
   ))

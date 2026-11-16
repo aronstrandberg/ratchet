@@ -137,6 +137,9 @@ export interface Interface {
   /**
    * Applies a fresh observation of a resource, queues a wake-up for each session it concerns, and delivers
    * those wake-ups.
+   *
+   * A pull request that merged while it was followed has the builds of its merge commit followed from then
+   * on, by the tasks that own it.
    */
   readonly observe: (observed: ResourceFacts) => Effect.Effect<Observed, Failure>
   /** Tries again to deliver every wake-up that has not reached its session, and returns how many did. */
@@ -182,6 +185,8 @@ interface Applied {
   readonly notices: ReadonlyArray<Notice>
   /** What tells one batch of changes from the next: a pull request's head, and nothing for other kinds. */
   readonly version: string
+  /** A resource the tasks that own this one follow from now on, because of what changed. */
+  readonly next?: ResourceRef
 }
 
 const githubView = (state: PullRequest.PullRequestState): GitHubView =>
@@ -223,6 +228,8 @@ const commitBuildsStanding = (state: CommitBuilds.CommitBuildsState): Standing =
   outcome: CommitBuilds.outcomeOf(state),
   state: CommitBuilds.summaryOf(state),
 })
+
+const owns = (subscriber: Subscriber) => subscriber.relation === "owns"
 
 /** The task a wake-up is about, as the woken session should read it. */
 interface Subject {
@@ -309,7 +316,7 @@ export const make = Effect.gen(function* () {
 
           const after = yield* cells.sendPullRequest(key, PullRequest.PullRequestEvent.Observed({ facts }))
 
-          return {
+          const applied = {
             label,
             standing: pullRequestStanding(after),
             version: facts.head.slice(0, 12),
@@ -319,6 +326,12 @@ export const make = Effect.gen(function* () {
               wakes: (relation: Relation) => PullRequest.wakes(relation, change),
             })),
           }
+
+          // A merge starts builds of the commit on the base branch, and nothing else tells the session
+          // that merged it when one of them fails.
+          return facts.mergeCommit !== null && PullRequest.mergedWhileFollowed(before, after)
+            ? { ...applied, next: ResourceRef.cases.CommitBuilds.make({ commit: facts.mergeCommit }) }
+            : applied
         }),
       LinearIssue: ({ facts }) =>
         Effect.gen(function* () {
@@ -438,10 +451,10 @@ export const make = Effect.gen(function* () {
     return delivered
   })
 
-  const observe = Effect.fn("Resources.observe")(function* (observed: ResourceFacts) {
-    const ref = subjectOf(observed)
-    const key = keyOf(ref)
-    const { label, standing, notices, version } = yield* apply(observed)
+  /** Applies an observation and tells the tasks it concerns. */
+  const settle = Effect.fn("Resources.settle")(function* (observed: ResourceFacts) {
+    const key = keyOf(subjectOf(observed))
+    const { label, standing, notices, version, next } = yield* apply(observed)
     const now = yield* Clock.currentTimeMillis
 
     // Every follower learns that it ended, whether or not its session is woken.
@@ -474,14 +487,19 @@ export const make = Effect.gen(function* () {
       woke += yield* deliver(subscriber.task)
     }
 
-    return { changes: notices.map((notice) => notice.tag), woke }
+    return { changes: notices.map((notice) => notice.tag), woke, owners: standing.subscribers.filter(owns), next }
   })
 
-  const register = Effect.fn("Resources.register")(function* (session: SessionId, ref: ResourceRef, relation: Relation) {
+  /**
+   * Attaches a resource to a task and reads it from its own system for the first time.
+   *
+   * The first read gives the task something to show. A resource that its own system does not have, or that
+   * the gateway is not signed in to read, is not followed.
+   */
+  const follow = Effect.fn("Resources.follow")(function* (subscriber: Subscriber, ref: ResourceRef) {
     const key = keyOf(ref)
-    const follower = yield* followerOf(session, key)
-    const task = Option.isSome(follower) ? follower.value : yield* tasks.taskOf(session)
-    const attached = yield* cellOf(ref).attach({ task, session, relation })
+    const { task, session, relation } = subscriber
+    const attached = yield* cellOf(ref).attach(subscriber)
 
     // A resource that one task at most may own leaves a second owner out of its subscribers.
     if (!attached.subscribers.some((subscriber) => subscriber.task === task)) {
@@ -492,16 +510,36 @@ export const make = Effect.gen(function* () {
 
     yield* cells.sendTask(task, TaskEvent.Attached({ resource: key, relation, session }))
 
-    // The first read gives the task something to show. A resource that its own system does not have, or that
-    // that the gateway is not signed in to read, is not followed: the session registers it again after the sign-in.
     const observed = yield* source.read(ref).pipe(
       Effect.tapErrorTag("ResourceNotFound", () => detach(task, ref)),
       Effect.tapErrorTag("ResourceNotSignedIn", () => detach(task, ref)),
     )
 
-    yield* observe(observed)
+    return yield* settle(observed)
+  })
 
-    return { task, resource: key, wakes: relation !== "context" && WakePolicy.allows(policy, session) }
+  const observe = Effect.fn("Resources.observe")(function* (observed: ResourceFacts) {
+    const { changes, woke, owners, next } = yield* settle(observed)
+
+    if (next !== undefined) {
+      for (const owner of owners) {
+        // What cannot be followed is not a reason to lose the observation that led to it. A commit that
+        // started no build is the usual case: its repository has no CI.
+        yield* follow(owner, next).pipe(
+          Effect.catch((failure) => Effect.logInfo(`${labelOf(next)} is not followed for ${owner.task}: ${failure.message}`)),
+        )
+      }
+    }
+
+    return { changes, woke }
+  })
+
+  const register = Effect.fn("Resources.register")(function* (session: SessionId, ref: ResourceRef, relation: Relation) {
+    const follower = yield* followerOf(session, keyOf(ref))
+    const task = Option.isSome(follower) ? follower.value : yield* tasks.taskOf(session)
+    yield* follow({ task, session, relation }, ref)
+
+    return { task, resource: keyOf(ref), wakes: relation !== "context" && WakePolicy.allows(policy, session) }
   })
 
   const setStatus = Effect.fn("Resources.setStatus")(function* (

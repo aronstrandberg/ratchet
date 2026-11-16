@@ -1,6 +1,7 @@
 import { expect, test } from "bun:test"
 import { Schema } from "effect"
 import { TaskId } from "../protocol/ids.ts"
+import { pullRequestMachine } from "./pull-request.ts"
 import { sessionMachine, tasksOf } from "./session.ts"
 import { isUnborn, taskMachine } from "./task.ts"
 
@@ -35,4 +36,17 @@ test("a wake-up queued before wake-ups carried their time still loads, from a sn
 
   expect(isUnborn(state) ? [] : state.outbox.map((wake) => wake.queuedAt)).toEqual([0])
   expect(storedTaskEvent('{"_tag":"WakeQueued","id":"w1","session":"ses_1","text":"It merged."}')).toMatchObject({ at: 0 })
+})
+
+const storedPullRequestEvent = Schema.decodeUnknownSync(
+  Schema.fromJsonString(Schema.toCodecJson(pullRequestMachine.eventSchema)),
+)
+
+test("an observation journaled before pull requests carried their merge commit still loads, with none", () => {
+  const event = storedPullRequestEvent(
+    '{"_tag":"Observed","facts":{"ref":{"owner":"o","repo":"r","number":1},"title":"t","state":"merged","draft":false,' +
+      '"head":"aaa","mergeable":"unknown","reviewDecision":null,"queued":false,"checks":[],"threads":[],"reviews":[],"viewer":"me"}}',
+  )
+
+  expect(event).toMatchObject({ facts: { mergeCommit: null } })
 })

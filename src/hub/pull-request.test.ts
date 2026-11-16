@@ -11,6 +11,7 @@ const facts = (over: Partial<PullRequestFacts> = {}): PullRequestFacts => ({
   state: "open",
   draft: false,
   head: "aaa",
+  mergeCommit: null,
   mergeable: "mergeable",
   reviewDecision: null,
   queued: false,

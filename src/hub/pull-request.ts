@@ -166,6 +166,14 @@ export const changes = (before: PullRequestState, after: PullRequestState): Read
     Open: (open) => (isOpen(before) ? changesWhileOpen(before, open) : []),
   })
 
+/**
+ * Whether a pull request merged between two observations, having been open at the first.
+ *
+ * One that was merged already when the hub first saw it did not merge while anyone followed it.
+ */
+export const mergedWhileFollowed = (before: PullRequestState, after: PullRequestState): boolean =>
+  isOpen(before) && isMerged(after)
+
 type Open = typeof PullRequestState.variants.Open.Type
 
 const isOpen = PullRequestState.$is("Open")
