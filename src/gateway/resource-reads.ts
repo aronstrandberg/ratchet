@@ -1,6 +1,7 @@
 import { Effect } from "effect"
 import { ReadReply, ResourceFacts, ResourceRef } from "../protocol/resource.ts"
 import * as CommitBuilds from "./commit-builds.ts"
+import * as CommitRuns from "./commit-runs.ts"
 import * as GitHub from "./github.ts"
 import * as IncidentIo from "./incident-io.ts"
 import * as Linear from "./linear.ts"
@@ -14,14 +15,15 @@ const unavailable = (failure: { readonly message: string }) => Effect.succeed(Re
 
 /**
  * Reads a resource from its own system: a pull request from GitHub, an issue from Linear, an incident from
- * incident.io, the builds that carry a commit from GitHub and Buildkite together.
+ * incident.io, the builds that carry a commit from GitHub and Buildkite together, and its infrastructure runs
+ * from GitHub and Spacelift together.
  *
  * A resource that is missing or cannot be read is an answer, not a failure, because the hub acts on which it
  * was. So is a system the gateway is not signed in to.
  */
 export const read = (
   ref: ResourceRef,
-): Effect.Effect<ReadReply, never, GitHub.Service | Linear.Service | IncidentIo.Service | CommitBuilds.Service> =>
+): Effect.Effect<ReadReply, never, GitHub.Service | Linear.Service | IncidentIo.Service | CommitBuilds.Service | CommitRuns.Service> =>
   ResourceRef.match(ref, {
     PullRequest: (pullRequest) =>
       Effect.flatMap(GitHub.Service, (github) => github.read(pullRequest)).pipe(
@@ -50,6 +52,17 @@ export const read = (
           CommitNotMerged: notFound,
           GitHubUnavailable: unavailable,
           BuildkiteUnavailable: unavailable,
+          NotSignedIn: notSignedIn,
+        }),
+      ),
+    CommitRuns: (commit) =>
+      Effect.flatMap(CommitRuns.Service, (runs) => runs.read(commit)).pipe(
+        Effect.map((facts) => Reply.Read.make({ observed: Observed.CommitRuns.make({ facts }) })),
+        Effect.catchTags({
+          NoRuns: notFound,
+          CommitNotMerged: notFound,
+          GitHubUnavailable: unavailable,
+          SpaceliftUnavailable: unavailable,
           NotSignedIn: notSignedIn,
         }),
       ),

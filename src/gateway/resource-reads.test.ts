@@ -3,12 +3,15 @@ import { Effect, Layer, Redacted } from "effect"
 import { ReadReply, ResourceFacts, ResourceRef } from "../protocol/resource.ts"
 import * as Buildkite from "./buildkite.ts"
 import * as CommitBuilds from "./commit-builds.ts"
+import * as CommitRuns from "./commit-runs.ts"
 import * as FakeMcp from "./fake-mcp.ts"
+import * as FakeSpacelift from "./fake-spacelift.ts"
 import * as GitHub from "./github.ts"
 import * as IncidentIo from "./incident-io.ts"
 import * as Linear from "./linear.ts"
 import * as ResourceReads from "./resource-reads.ts"
 import * as SignIns from "./sign-ins.ts"
+import * as Spacelift from "./spacelift.ts"
 
 /** The tools of Linear and incident.io that the gateway calls. */
 interface Tools {
@@ -126,12 +129,39 @@ const systems = new Map([
   ["/buildkite/mcp", buildkite],
 ])
 
+const proposed = "ef56".repeat(10)
+
+/** What Spacelift holds: the plans of the pull request on two stacks, and the runs that its merge started. */
+const spacelift = FakeSpacelift.make(() => [
+  { id: "p1", stack: "iam", commit: proposed, type: "PROPOSED", state: "FINISHED" },
+  { id: "p2", stack: "dns", commit: proposed, type: "PROPOSED", state: "FINISHED" },
+  {
+    id: "t1",
+    stack: "iam",
+    commit,
+    type: "TRACKED",
+    state: "UNCONFIRMED",
+    createdAt: 1_700_000_000,
+    updatedAt: 1_700_000_060,
+    delta: { addCount: 2, changeCount: 0, deleteCount: 1 },
+  },
+  { id: "t2", stack: "iam", commit, type: "TRACKED", state: "SKIPPED", createdAt: 1_700_000_100 },
+  { id: "t3", stack: "dns", commit, type: "TRACKED", state: "FINISHED", createdAt: 1_700_000_000 },
+  // A stack that the push started and that did not plan the pull request.
+  { id: "t4", stack: "billing", commit, type: "TRACKED", state: "UNCONFIRMED", createdAt: 1_700_000_000 },
+])
+
 // The systems on a port of their own. Each accepts the token "good" and refuses any other.
 const server = Bun.serve({
   port: 0,
   hostname: "127.0.0.1",
   fetch: (request) => {
-    if (request.headers.get("authorization") !== "Bearer good") return new Response("sign in first\n", { status: 401 })
+    const accepted = request.headers.get("authorization") === "Bearer good"
+
+    // Spacelift answers a token it does not accept, with nothing in the answer.
+    if (new URL(request.url).pathname === "/spacelift/graphql") return spacelift.fetch(request, accepted)
+
+    if (!accepted) return new Response("sign in first\n", { status: 401 })
 
     return (systems.get(new URL(request.url).pathname) ?? linear).fetch(request)
   },
@@ -151,6 +181,7 @@ const signIns = (tokens: ReadonlyArray<string>) => {
         linear: "signed-in",
         "incident-io": "signed-in",
         buildkite: "signed-in",
+        spacelift: "signed-in",
       }),
       begin: () => Effect.succeed(""),
       complete: () => Effect.void,
@@ -172,19 +203,25 @@ const github = Layer.succeed(
   GitHub.Service,
   GitHub.Service.of({
     read: (pullRequest) => Effect.fail(new GitHub.PullRequestNotFound(pullRequest)),
-    landing: (merged) => Effect.succeed({ title: "Speed up the build (#12)", branch: "main", commits: [merged.commit] }),
+    landing: (merged) =>
+      Effect.succeed({ title: "Speed up the build (#12)", branch: "main", proposed: ["ef56".repeat(10)], commits: [merged.commit] }),
   }),
 )
 
-/** The gateway's connections to Linear, incident.io and Buildkite, on the stand-in and the tokens given. */
+/** The gateway's connections to Linear, incident.io, Buildkite and Spacelift, on the stand-ins and the tokens given. */
 const outside = (tokens: ReadonlyArray<string>) =>
   Layer.mergeAll(
     Linear.layer({ url: `http://127.0.0.1:${server.port}/linear/mcp` }),
     IncidentIo.layer({ url: `http://127.0.0.1:${server.port}/incident/mcp` }),
     CommitBuilds.layerWithoutDependencies({ settle: 0, fresh: 0 }),
+    CommitRuns.layerWithoutDependencies({ settle: 0 }),
   ).pipe(
     Layer.provideMerge(
-      Layer.mergeAll(github, Buildkite.layer({ url: `http://127.0.0.1:${server.port}/buildkite/mcp`, organization: "lovable" })),
+      Layer.mergeAll(
+        github,
+        Buildkite.layer({ url: `http://127.0.0.1:${server.port}/buildkite/mcp`, organization: "lovable" }),
+        Spacelift.layer({ url: `http://127.0.0.1:${server.port}/spacelift` }),
+      ),
     ),
     Layer.provide(signIns(tokens)),
   )
@@ -317,4 +354,56 @@ test("a commit that no build carries is answered as not found", async () => {
   const unbuilt = ResourceRef.cases.CommitBuilds.make({ owner: "lovablelabs", repo: "lovable", commit: "cd34".repeat(10) })
 
   expect(await read(unbuilt)).toEqual(ReadReply.cases.NotFound.make({}))
+})
+
+test("the runs that carry a commit are read for the stacks that planned its pull request, in milliseconds", async () => {
+  const merged = { owner: "lovablelabs", repo: "lovable", commit }
+  const url = `http://127.0.0.1:${server.port}/spacelift/stack`
+
+  // The first token is refused, as Spacelift refuses one: with an answer that names nobody.
+  const reply = await read(ResourceRef.cases.CommitRuns.make(merged), ["stale", "good"])
+
+  expect(reply).toEqual(
+    ReadReply.cases.Read.make({
+      observed: ResourceFacts.cases.CommitRuns.make({
+        facts: {
+          ref: merged,
+          title: "Speed up the build (#12)",
+          runs: [
+            {
+              id: "t3",
+              stack: "dns",
+              state: "FINISHED",
+              needsApproval: false,
+              url: `${url}/dns/run/t3`,
+              commit,
+              createdAt: 1_700_000_000_000,
+              updatedAt: 1_700_000_000_000,
+              delta: null,
+            },
+            {
+              id: "t1",
+              stack: "iam",
+              state: "UNCONFIRMED",
+              needsApproval: false,
+              url: `${url}/iam/run/t1`,
+              commit,
+              createdAt: 1_700_000_000_000,
+              updatedAt: 1_700_000_060_000,
+              delta: { add: 2, change: 0, delete: 1 },
+            },
+          ],
+        },
+      }),
+    }),
+  )
+})
+
+test("a token Spacelift keeps refusing makes the read unavailable", async () => {
+  const merged = ResourceRef.cases.CommitRuns.make({ owner: "lovablelabs", repo: "lovable", commit })
+  const refused = await read(merged, ["stale", "also stale"])
+
+  expect(refused).toEqual(
+    ReadReply.cases.Unavailable.make({ message: "Spacelift failed (planned): Spacelift did not accept the sign-in's token" }),
+  )
 })

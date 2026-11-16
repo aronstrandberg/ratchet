@@ -7,6 +7,7 @@ import { type ResourceFacts, type ResourceKey, keyOf, subjectOf } from "../proto
 import type { Wake } from "../protocol/wake.ts"
 import * as Cells from "./cells.ts"
 import { CommitBuildsEntity, commitBuildsMachine } from "./commit-builds.ts"
+import { CommitRunsEntity, commitRunsMachine } from "./commit-runs.ts"
 import { IncidentEntity, incidentMachine } from "./incident.ts"
 import * as Index from "./index-store.ts"
 import { LinearIssueEntity, linearIssueMachine } from "./linear-issue.ts"
@@ -106,6 +107,7 @@ const cells = Layer.mergeAll(
   EntityMachine.layer(LinearIssueEntity, linearIssueMachine),
   EntityMachine.layer(IncidentEntity, incidentMachine),
   EntityMachine.layer(CommitBuildsEntity, commitBuildsMachine),
+  EntityMachine.layer(CommitRunsEntity, commitRunsMachine),
 ).pipe(Layer.provideMerge(TestRunner.layer))
 
 /**

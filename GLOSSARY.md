@@ -25,8 +25,8 @@ or `Idle`. It is derived, never set. _Avoid_: Status
 ### Following
 
 **Resource**: Something outside OpenCode that a task follows: a pull request, a
-Linear issue, an incident or the builds of a commit. _Avoid_: Attachment (that
-is the link, not the thing)
+Linear issue, an incident, or the builds or the infrastructure runs of a commit.
+_Avoid_: Attachment (that is the link, not the thing)
 
 **Builds of a commit**: The CI builds that carry a merge commit on its branch:
 for each pipeline, the first build that ran on the commit or on a later commit.
@@ -36,6 +36,12 @@ later commit and carries other changes too. A build on a schedule and the merge
 queue's build before the merge are not among them. They are settled once every
 build has been over for a while. The tasks that own a pull request follow the
 builds of its merge commit from the moment it merges. _Avoid_: Pipeline, CI run
+
+**Runs of a commit**: The Spacelift runs that apply a merged pull request's
+infrastructure change: for each stack that planned the pull request, the first
+tracked run that was not skipped, on the merge commit or on a later commit of
+the branch. A run waits when its plan is ready and someone has to confirm it, or
+when a policy asks for an approval. _Avoid_: Deployment, apply
 
 **Ticket**: The Linear issue a task owns. One task at most owns an issue.
 

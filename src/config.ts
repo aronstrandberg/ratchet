@@ -27,6 +27,8 @@ export interface Settings {
   readonly BUILDKITE_MCP_URL?: string
   /** The Buildkite organization whose builds the gateway reads. */
   readonly BUILDKITE_ORGANIZATION?: string
+  /** Where the Spacelift account is, such as `https://lovable.app.spacelift.io`. A scratch Ratchet sets it to a stand-in. */
+  readonly SPACELIFT_URL?: string
   readonly WAKE_SESSIONS?: string
   readonly OTLP_URL?: string
 }
@@ -50,6 +52,8 @@ export interface Gateway {
    */
   readonly signIns: Readonly<Record<System, Target>>
   readonly buildkite: { readonly organization: string }
+  /** Where the Spacelift account is. Its GraphQL API is under `/graphql` there. */
+  readonly spacelift: { readonly url: string }
   readonly tracing: Tracing
 }
 
@@ -81,6 +85,7 @@ export const gateway = (settings: Settings): Result.Result<Gateway, InvalidConfi
     const url = yield* required(settings, "OPENCODE_URL")
     const password = yield* required(settings, "OPENCODE_PASSWORD")
     const token = yield* required(settings, "GITHUB_TOKEN")
+    const spacelift = Option.getOrElse(optional(settings.SPACELIFT_URL), () => "https://lovable.app.spacelift.io")
 
     return {
       opencode: { url, password: Redacted.make(password) },
@@ -93,6 +98,8 @@ export const gateway = (settings: Settings): Result.Result<Gateway, InvalidConfi
           resource: Option.getOrElse(optional(settings.INCIDENT_IO_MCP_URL), () => "https://mcp.incident.io/mcp"),
           scope: null,
         },
+        // The account's API, and reading is all the gateway does there.
+        spacelift: { resource: spacelift, scope: "graphql:read" },
         // Reading is all the gateway does in Buildkite.
         buildkite: {
           resource: Option.getOrElse(optional(settings.BUILDKITE_MCP_URL), () => "https://mcp.buildkite.com/mcp"),
@@ -100,6 +107,7 @@ export const gateway = (settings: Settings): Result.Result<Gateway, InvalidConfi
         },
       },
       buildkite: { organization: Option.getOrElse(optional(settings.BUILDKITE_ORGANIZATION), () => "lovable") },
+      spacelift: { url: spacelift },
       tracing: tracing(settings),
     }
   })

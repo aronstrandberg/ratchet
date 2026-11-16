@@ -3,6 +3,7 @@ import { causeText } from "../failure.ts"
 import { TaskId } from "../protocol/ids.ts"
 import { type Outcome, ResourceKey } from "../protocol/resource.ts"
 import * as CommitBuilds from "./commit-builds.ts"
+import * as CommitRuns from "./commit-runs.ts"
 import * as Incident from "./incident.ts"
 import * as LinearIssue from "./linear-issue.ts"
 import { PullRequestState, failedChecks, outcomeOf } from "./pull-request.ts"
@@ -86,6 +87,8 @@ const ResourceDetail = Schema.Struct({
   head: Schema.optional(Schema.String),
   ci: Schema.optional(Schema.String),
   failed: Schema.optional(Schema.Array(Schema.String)),
+  /** The stacks whose run waits for a person. */
+  waiting: Schema.optional(Schema.Array(Schema.String)),
   reviewDecision: Schema.optional(Schema.NullOr(Schema.String)),
   conflicting: Schema.optional(Schema.Boolean),
   queued: Schema.optional(Schema.Boolean),
@@ -102,7 +105,7 @@ type ResourceDetail = typeof ResourceDetail.Type
 const ResourceDetailJson = Schema.fromJsonString(ResourceDetail)
 
 /** The kinds of resource the board lists. */
-export const ResourceKind = Schema.Literals(["pull_request", "linear_issue", "incident", "commit_builds"])
+export const ResourceKind = Schema.Literals(["pull_request", "linear_issue", "incident", "commit_builds", "commit_runs"])
 
 export type ResourceKind = typeof ResourceKind.Type
 
@@ -130,6 +133,8 @@ export interface Interface {
   readonly putIncident: (key: ResourceKey, state: Incident.IncidentState) => Effect.Effect<void, IndexError>
   /** Writes the row of a commit's builds, under the same rule. `failed` lists the pipelines whose build failed. */
   readonly putCommitBuilds: (key: ResourceKey, state: CommitBuilds.CommitBuildsState) => Effect.Effect<void, IndexError>
+  /** Writes the row of a commit's runs, under the same rule. `waiting` and `failed` list the stacks whose run does. */
+  readonly putCommitRuns: (key: ResourceKey, state: CommitRuns.CommitRunsState) => Effect.Effect<void, IndexError>
   /** Every task as a forest. A task whose parent is missing from the index is a root. */
   readonly tree: Effect.Effect<ReadonlyArray<TaskNode>, IndexError>
   /** The resources, the latest change first. `watched` keeps those someone follows that can still change. */
@@ -311,6 +316,20 @@ export const make = (database: Database): Effect.Effect<Interface> =>
         }),
       })
 
+    const putCommitRuns = (key: ResourceKey, state: CommitRuns.CommitRunsState) =>
+      putResource(key, {
+        kind: "commit_runs",
+        state: CommitRuns.summaryOf(state),
+        subscribers: state.subscribers,
+        outcome: CommitRuns.outcomeOf(state),
+        detail: CommitRuns.attentionOf(state),
+        ...CommitRuns.CommitRunsState.$match<Pick<Entry, "title" | "seen">>(state, {
+          Unseen: () => ({ title: "", seen: false }),
+          Running: ({ title }) => ({ title, seen: true }),
+          Settled: ({ title }) => ({ title, seen: true }),
+        }),
+      })
+
     const tree = run("tree", () =>
       database.all("SELECT id, parent, title, state, detail FROM task ORDER BY updated_at DESC"),
     ).pipe(
@@ -369,6 +388,7 @@ export const make = (database: Database): Effect.Effect<Interface> =>
       putLinearIssue,
       putIncident,
       putCommitBuilds,
+      putCommitRuns,
       tree,
       resources,
       tasksWithUndelivered,

@@ -4,28 +4,32 @@ import type { Env } from "../env.ts"
 import * as Telemetry from "../telemetry.ts"
 import * as Buildkite from "./buildkite.ts"
 import * as CommitBuilds from "./commit-builds.ts"
+import * as CommitRuns from "./commit-runs.ts"
 import * as GitHub from "./github.ts"
 import * as HubBinding from "./hub-binding.ts"
 import * as IncidentIo from "./incident-io.ts"
 import * as Linear from "./linear.ts"
 import * as OpenCode from "./opencode.ts"
 import * as SignIns from "./sign-ins.ts"
+import * as Spacelift from "./spacelift.ts"
 
-/** The gateway: its connections to OpenCode, GitHub, Linear, incident.io and Buildkite, its sign-ins, and its line to the hub. */
+/** The gateway: its connections to OpenCode, GitHub, Linear, incident.io, Buildkite and Spacelift, its sign-ins, and its line to the hub. */
 const layer = (env: Env, config: Config.Gateway) =>
   Layer.mergeAll(
     OpenCode.layer(config.opencode),
     Linear.layer({ url: config.signIns.linear.resource }),
     IncidentIo.layer({ url: config.signIns["incident-io"].resource }),
     CommitBuilds.layerWithoutDependencies({ settle: "5 seconds", fresh: "20 seconds" }),
+    CommitRuns.layerWithoutDependencies({ settle: "5 seconds" }),
     HubBinding.layer(env.HUB),
   )
     .pipe(
-      // The builds that carry a commit are read from both.
+      // What carries a commit is read from GitHub together with Buildkite or Spacelift.
       Layer.provideMerge(
         Layer.mergeAll(
           GitHub.layer(config.github),
           Buildkite.layer({ url: config.signIns.buildkite.resource, organization: config.buildkite.organization }),
+          Spacelift.layer(config.spacelift),
         ),
       ),
     )

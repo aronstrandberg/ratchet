@@ -66,6 +66,7 @@ export const layer = (
         linear: status("linear"),
         "incident-io": status("incident-io"),
         buildkite: status("buildkite"),
+        spacelift: status("spacelift"),
       }),
       begin: (system, origin) =>
         call(system, async (object) => await object.begin(targets[system], `${origin}/gateway/sign-ins/${system}/callback`)),
