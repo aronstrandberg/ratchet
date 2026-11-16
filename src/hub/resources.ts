@@ -327,10 +327,10 @@ export const make = Effect.gen(function* () {
             })),
           }
 
-          // A merge starts builds of the commit on the base branch, and nothing else tells the session
-          // that merged it when one of them fails.
+          // A merge starts builds on the base branch that carry the commit, and nothing else tells the
+          // session that merged it when one of them fails.
           return facts.mergeCommit !== null && PullRequest.mergedWhileFollowed(before, after)
-            ? { ...applied, next: ResourceRef.cases.CommitBuilds.make({ commit: facts.mergeCommit }) }
+            ? { ...applied, next: ResourceRef.cases.CommitBuilds.make({ owner: facts.ref.owner, repo: facts.ref.repo, commit: facts.mergeCommit }) }
             : applied
         }),
       LinearIssue: ({ facts }) =>

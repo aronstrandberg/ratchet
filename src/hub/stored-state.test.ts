@@ -1,6 +1,7 @@
 import { expect, test } from "bun:test"
-import { Schema } from "effect"
+import { Option, Schema } from "effect"
 import { TaskId } from "../protocol/ids.ts"
+import { refOf } from "../protocol/resource.ts"
 import { pullRequestMachine } from "./pull-request.ts"
 import { sessionMachine, tasksOf } from "./session.ts"
 import { isUnborn, taskMachine } from "./task.ts"
@@ -49,4 +50,14 @@ test("an observation journaled before pull requests carried their merge commit s
   )
 
   expect(event).toMatchObject({ facts: { mergeCommit: null } })
+})
+
+test("a task that follows a commit's builds under their first key, the hash alone, still loads", () => {
+  const state = storedTask(
+    '{"_tag":"Idle","title":"t","parent":null,"sessions":["ses_1"],"running":[],"subagents":[],"questions":[],' +
+      '"attachments":[{"resource":"builds:ab12ab12ab12ab12ab12ab12ab12ab12ab12ab12","relation":"owns","session":"ses_1",' +
+      '"status":"unassigned","note":"","ended":null}],"outbox":[]}',
+  )
+
+  expect(isUnborn(state) ? [] : state.attachments.map((attachment) => refOf(attachment.resource))).toEqual([Option.none()])
 })

@@ -7,10 +7,20 @@ import type { Outcome, Relation } from "../protocol/resource.ts"
 import { Subscriber, attach, detach } from "./subscribers.ts"
 
 const subscribers = { subscribers: Schema.Array(Subscriber) }
-const seen = { title: Schema.String, builds: Schema.Array(Build), ...subscribers }
+
+const seen = {
+  /** The commit whose builds these are. A build that built another commit carries later commits as well. */
+  commit: Schema.String,
+  title: Schema.String,
+  builds: Schema.Array(Build),
+  /** The pipelines whose build failed and that have had no build pass since. */
+  unrecovered: Schema.Array(Schema.String),
+  ...subscribers,
+}
 
 /**
- * What the hub holds about the builds of a commit: what the CI system last said, and who follows them.
+ * What the hub holds about the builds that carry a commit: what the CI system last said, and who follows
+ * them.
  *
  * `Building` while a build may still start, finish or be retried. `Settled` once they are all over: nothing
  * reads them after that.
@@ -32,7 +42,10 @@ export const CommitBuildsEvent = Event({
   Detached: { task: TaskId },
 })
 
-/** How long after the newest build was created every build must have been over, before the builds are settled. */
+/**
+ * How long after the newest build was created every build must have been over, before the builds are settled.
+ * A pipeline that skips its builds while one runs has a new build with each push, so the wait starts again.
+ */
 const quietFor = 15 * 60_000
 
 /** How long after the newest build was created the hub stops following builds that never finish. */
@@ -57,6 +70,9 @@ export const settles = (builds: ReadonlyArray<Build>, at: number): boolean => {
 }
 
 const any = [CommitBuildsState.Unseen, CommitBuildsState.Building, CommitBuildsState.Settled] as const
+const isUnseen = CommitBuildsState.$is("Unseen")
+const isSettled = CommitBuildsState.$is("Settled")
+const unrecoveredOf = (state: CommitBuildsState): ReadonlyArray<string> => (isUnseen(state) ? [] : state.unrecovered)
 
 /** How the state of a commit's builds follows from what happens to them. */
 export const commitBuildsMachine = Machine.make({
@@ -65,7 +81,11 @@ export const commitBuildsMachine = Machine.make({
   initial: CommitBuildsState.Unseen({ subscribers: [] }),
 })
   .on(any, CommitBuildsEvent.Observed, ({ state, event }) => {
-    const held = { title: event.facts.title, builds: event.facts.builds, subscribers: state.subscribers }
+    const { ref, title, builds } = event.facts
+    const passed = new Set(builds.filter((build) => build.state === "passed").map((build) => build.pipeline))
+    const failed = builds.filter(hasFailed).map((build) => build.pipeline)
+    const unrecovered = [...new Set([...unrecoveredOf(state), ...failed])].filter((pipeline) => !passed.has(pipeline))
+    const held = { commit: ref.commit, title, builds, unrecovered, subscribers: state.subscribers }
 
     return settles(event.facts.builds, event.at) ? CommitBuildsState.Settled(held) : CommitBuildsState.Building(held)
   })
@@ -81,9 +101,18 @@ export const CommitBuildsEntity = toEntity(commitBuildsMachine, { type: "CommitB
 
 /** Something that happened to the builds of a commit, in terms a task can act on. */
 export const Change = Schema.TaggedUnion({
-  /** A build has a failed job. It is told once for a build, when the first job fails. */
-  BuildFailed: { pipeline: Schema.String, number: Schema.Int, jobs: Schema.Array(Schema.String), url: Schema.String },
-  /** A build that had failed passed, after a retry. */
+  /**
+   * A pipeline's build has a failed job. It is told once for a build, when the first job fails. `shared` says
+   * that the build built a later commit, so it carries other people's changes as well.
+   */
+  BuildFailed: {
+    pipeline: Schema.String,
+    number: Schema.Int,
+    jobs: Schema.Array(Schema.String),
+    url: Schema.String,
+    shared: Schema.Boolean,
+  },
+  /** A pipeline whose build had failed has a build that passed: the same one after a retry, or a later one. */
   BuildRecovered: { pipeline: Schema.String, number: Schema.Int },
   /** Every build is over. `failed` is how many of them failed. */
   Settled: { failed: Schema.Int },
@@ -91,9 +120,6 @@ export const Change = Schema.TaggedUnion({
 
 /** One thing that happened to the builds of a commit. */
 export type Change = typeof Change.Type
-
-const isUnseen = CommitBuildsState.$is("Unseen")
-const isSettled = CommitBuildsState.$is("Settled")
 
 /** The builds a state holds. None before the first observation. */
 export const buildsOf = (state: CommitBuildsState): ReadonlyArray<Build> => (isUnseen(state) ? [] : state.builds)
@@ -117,23 +143,28 @@ export const outcomeOf = (state: CommitBuildsState): Outcome | null => (isSettle
 /**
  * What changed between two observations of a commit's builds.
  *
- * Unlike other kinds of resource, the first observation reports a build that has failed already: the hub
- * follows a merged pull request's builds itself, so no session reads their state when they are attached.
+ * A pipeline has one build at a time, and which build that is can change: a build that was canceled gives way
+ * to the next one, and a failed build to its rebuild. So the two observations are compared pipeline by
+ * pipeline. Unlike other kinds of resource, the first observation reports a build that has failed already:
+ * the hub follows a merged pull request's builds itself, so no session reads their state when they are
+ * attached.
  */
 export const changes = (before: CommitBuildsState, after: CommitBuildsState): ReadonlyArray<Change> => {
+  if (isUnseen(after)) return []
   const found: Array<Change> = []
-  const known = new Map(buildsOf(before).map((build) => [build.id, build]))
+  const known = new Map(buildsOf(before).map((build) => [build.pipeline, build]))
 
-  for (const build of buildsOf(after)) {
-    const earlier = known.get(build.id)
+  for (const build of after.builds) {
+    const earlier = known.get(build.pipeline)
     const failedBefore = earlier !== undefined && hasFailed(earlier)
 
-    if (hasFailed(build) && !failedBefore) {
+    if (hasFailed(build) && !(failedBefore && earlier.id === build.id)) {
       const { pipeline, number, url } = build
-      found.push(Change.cases.BuildFailed.make({ pipeline, number, jobs: build.failedJobs, url }))
+      const shared = build.commit !== after.commit
+      found.push(Change.cases.BuildFailed.make({ pipeline, number, jobs: build.failedJobs, url, shared }))
     }
 
-    if (build.state === "passed" && failedBefore) {
+    if (build.state === "passed" && unrecoveredOf(before).includes(build.pipeline)) {
       found.push(Change.cases.BuildRecovered.make({ pipeline: build.pipeline, number: build.number }))
     }
   }
@@ -158,9 +189,12 @@ export const wakes = (relation: Relation, change: Change): boolean => relation =
 /** One line a session can read, for one change. */
 export const describe = (change: Change): string =>
   Change.match(change, {
-    BuildFailed: ({ pipeline, number, jobs, url }) =>
-      `Build ${pipeline} #${number} failed${jobs.length === 0 ? "" : ` in ${jobs.join(", ")}`}: ${url}`,
-    BuildRecovered: ({ pipeline, number }) => `Build ${pipeline} #${number} passed after all.`,
+    BuildFailed: ({ pipeline, number, jobs, url, shared }) =>
+      [
+        `Build ${pipeline} #${number} failed${jobs.length === 0 ? "" : ` in ${jobs.join(", ")}`}: ${url}`,
+        ...(shared ? ["It built a later commit, so it carries other changes as well as this one."] : []),
+      ].join(" "),
+    BuildRecovered: ({ pipeline, number }) => `Build ${pipeline} #${number} passed, after the pipeline's build had failed.`,
     Settled: ({ failed }) => (failed === 0 ? "Every build is over, and none failed." : `Every build is over. ${failed} failed.`),
   })
 

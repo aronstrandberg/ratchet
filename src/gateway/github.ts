@@ -1,6 +1,7 @@
-import { Context, Effect, Layer, Redacted, Schema } from "effect"
+import { Context, Effect, Layer, Option, Redacted, Ref, Schema } from "effect"
 import { FetchHttpClient, HttpClient, HttpClientRequest, HttpClientResponse } from "effect/http"
 import { causeText } from "../failure.ts"
+import type { CommitBuildsRef } from "../protocol/builds.ts"
 import type { Check, PullRequestFacts, PullRequestRef, Review } from "../protocol/pull-request.ts"
 
 /** GitHub has no pull request under this reference, or the token cannot see it. */
@@ -24,6 +25,30 @@ export class GitHubUnavailable extends Schema.TaggedError<GitHubUnavailable>()("
   }
 }
 
+/** GitHub has no merged pull request that this commit is the merge of, or the token cannot see it. */
+export class CommitNotMerged extends Schema.TaggedError<CommitNotMerged>()("CommitNotMerged", {
+  owner: Schema.String,
+  repo: Schema.String,
+  commit: Schema.String,
+}) {
+  override get message(): string {
+    return `GitHub has no merged pull request that became commit ${this.commit.slice(0, 9)} of ${this.owner}/${this.repo}`
+  }
+}
+
+/** How a commit came onto its branch when its pull request merged. */
+export interface Landing {
+  /** The first line of the commit's message. */
+  readonly title: string
+  /** The branch the pull request merged into. */
+  readonly branch: string
+  /**
+   * The commit and the commits that came onto the branch after it, the oldest first. They end three hours
+   * after the commit was made, or at the branch's newest commit.
+   */
+  readonly commits: ReadonlyArray<string>
+}
+
 /** The token the gateway reads GitHub with. */
 export interface Config {
   readonly token: Redacted.Redacted<string>
@@ -38,6 +63,12 @@ export interface Interface {
    * `unknown`. This reads once more after two seconds when it does.
    */
   readonly read: (ref: PullRequestRef) => Effect.Effect<PullRequestFacts, PullRequestNotFound | GitHubUnavailable>
+  /**
+   * Reads how a merge commit came onto its branch, and which commits followed it there.
+   *
+   * A build that carries the commit built the commit itself or one of those that followed.
+   */
+  readonly landing: (ref: CommitBuildsRef) => Effect.Effect<Landing, CommitNotMerged | GitHubUnavailable>
 }
 
 /** The gateway's connection to GitHub. */
@@ -129,6 +160,89 @@ const Response = Schema.Struct({
   ),
 })
 
+const mergedQuery = `query($owner: String!, $repo: String!, $commit: GitObjectID!) {
+  repository(owner: $owner, name: $repo) {
+    object(oid: $commit) {
+      ... on Commit {
+        messageHeadline committedDate
+        associatedPullRequests(first: 10) { nodes { state baseRefName mergeCommit { oid } } }
+      }
+    }
+  }
+}`
+
+const Merged = Schema.Struct({
+  data: Schema.optional(
+    Schema.NullOr(
+      Schema.Struct({
+        repository: Schema.NullOr(
+          Schema.Struct({
+            object: Schema.NullOr(
+              Schema.Struct({
+                messageHeadline: Schema.optional(Schema.String),
+                committedDate: Schema.optional(Schema.DateFromString),
+                associatedPullRequests: Schema.optional(
+                  Schema.Struct({
+                    nodes: Schema.Array(
+                      Schema.Struct({
+                        state: Schema.String,
+                        baseRefName: Schema.String,
+                        mergeCommit: Schema.NullOr(Schema.Struct({ oid: Schema.String })),
+                      }),
+                    ),
+                  }),
+                ),
+              }),
+            ),
+          }),
+        ),
+      }),
+    ),
+  ),
+})
+
+const historyQuery = `query($owner: String!, $repo: String!, $branch: String!, $since: GitTimestamp!, $until: GitTimestamp!, $after: String) {
+  repository(owner: $owner, name: $repo) {
+    ref(qualifiedName: $branch) {
+      target { ... on Commit { history(first: 100, since: $since, until: $until, after: $after) {
+        pageInfo { hasNextPage endCursor }
+        nodes { oid }
+      } } }
+    }
+  }
+}`
+
+const History = Schema.Struct({
+  data: Schema.optional(
+    Schema.NullOr(
+      Schema.Struct({
+        repository: Schema.NullOr(
+          Schema.Struct({
+            ref: Schema.NullOr(
+              Schema.Struct({
+                target: Schema.Struct({
+                  history: Schema.optional(
+                    Schema.Struct({
+                      pageInfo: Schema.Struct({ hasNextPage: Schema.Boolean, endCursor: Schema.NullOr(Schema.String) }),
+                      nodes: Schema.Array(Schema.Struct({ oid: Schema.String })),
+                    }),
+                  ),
+                }),
+              }),
+            ),
+          }),
+        ),
+      }),
+    ),
+  ),
+})
+
+/** How long after a commit was made the commits that followed it are read. A build that carries it starts sooner. */
+const followedFor = 3 * 60 * 60_000
+
+/** The most pages of a branch's history that one read takes: a hundred commits each. */
+const historyPages = 5
+
 // SAFETY: toLowerCase of a string literal is the literal that Lowercase names.
 const lower = <A extends string>(value: A) => value.toLowerCase() as Lowercase<A>
 
@@ -216,7 +330,70 @@ export const make = (config: Config): Effect.Effect<Interface, never, HttpClient
           : Effect.succeed(facts),
       )
 
-    return Service.of({ read })
+    const ask = <A>(operation: string, query: string, variables: Readonly<Record<string, string | null>>, answer: Schema.Codec<A, unknown>) =>
+      HttpClientRequest.post("https://api.github.com/graphql").pipe(
+        HttpClientRequest.bearerToken(Redacted.value(config.token)),
+        HttpClientRequest.setHeader("user-agent", "ratchet"),
+        HttpClientRequest.bodyJsonUnsafe({ query, variables }),
+        http.execute,
+        Effect.flatMap(HttpClientResponse.schemaBodyJson(answer)),
+        Effect.mapError((cause) => new GitHubUnavailable({ operation, cause })),
+      )
+
+    // Where and when a commit was merged never changes.
+    const merges = yield* Ref.make(new Map<string, { readonly title: string; readonly branch: string; readonly at: Date }>())
+
+    const mergeOf = Effect.fnUntraced(function* (ref: CommitBuildsRef) {
+      const known = (yield* Ref.get(merges)).get(ref.commit)
+
+      if (known !== undefined) return known
+
+      const answer = yield* ask("merge", mergedQuery, ref, Merged)
+      const commit = answer.data?.repository?.object
+
+      const pullRequest = commit?.associatedPullRequests?.nodes.find(
+        (node) => node.state === "MERGED" && node.mergeCommit?.oid === ref.commit,
+      )
+
+      if (commit?.committedDate === undefined || pullRequest === undefined) return yield* new CommitNotMerged(ref)
+
+      const merge = { title: commit.messageHeadline ?? "", branch: pullRequest.baseRefName, at: commit.committedDate }
+      yield* Ref.update(merges, (held) => new Map(held).set(ref.commit, merge))
+
+      return merge
+    })
+
+    const landing = Effect.fn("GitHub.landing")(function* (ref: CommitBuildsRef) {
+      yield* Effect.annotateCurrentSpan("github.commit", ref.commit)
+
+      const merge = yield* mergeOf(ref)
+      const { owner, repo } = ref
+      const since = merge.at.toISOString()
+      const until = new Date(merge.at.getTime() + followedFor).toISOString()
+      // GitHub lists a branch's history with the newest commit first.
+      const newestFirst: Array<string> = []
+      let after: Option.Option<string> = Option.none()
+
+      for (let page = 0; page < historyPages; page++) {
+        const variables = { owner, repo, branch: merge.branch, since, until, after: Option.getOrNull(after) }
+        const answer = yield* ask("history", historyQuery, variables, History)
+        const history = answer.data?.repository?.ref?.target.history
+
+        if (history === undefined) break
+        newestFirst.push(...history.nodes.map((node) => node.oid))
+
+        if (!history.pageInfo.hasNextPage || newestFirst.includes(ref.commit)) break
+        after = Option.fromNullOr(history.pageInfo.endCursor)
+      }
+
+      const position = newestFirst.indexOf(ref.commit)
+      // A commit that the pages did not reach is older than all of them, so every commit read came after it.
+      const followers = position === -1 ? newestFirst : newestFirst.slice(0, position)
+
+      return { title: merge.title, branch: merge.branch, commits: [ref.commit, ...followers.toReversed()] }
+    })
+
+    return Service.of({ read, landing })
   })
 
 /** The connection to GitHub, still in need of an HTTP client. */

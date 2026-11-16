@@ -302,13 +302,13 @@ test("a task that waits on an incident hears only its end, and the board lists t
   ))
 
 const commit = "ab12".repeat(10)
-const buildsRef = ResourceRef.cases.CommitBuilds.make({ commit })
+const buildsRef = ResourceRef.cases.CommitBuilds.make({ owner: "o", repo: "r", commit })
 
 /** The builds of the commit, created `minutesAgo`: one in `bazel` in the state given, and one that passed. */
 const builds = (state: string, minutesAgo = 1, failedJobs: ReadonlyArray<string> = []): ResourceFacts =>
   ResourceFacts.cases.CommitBuilds.make({
     facts: {
-      ref: { commit },
+      ref: { owner: "o", repo: "r", commit },
       title: "Speed up the build (#12)",
       builds: ["bazel", "deploy"].map((pipeline) => ({
         id: `${pipeline}-1`,
@@ -316,6 +316,7 @@ const builds = (state: string, minutesAgo = 1, failedJobs: ReadonlyArray<string>
         number: 1,
         state: pipeline === "bazel" ? state : "passed",
         url: `https://buildkite.com/lovable/${pipeline}/builds/1`,
+        commit,
         createdAt: Date.now() - minutesAgo * 60_000,
         failedJobs: pipeline === "bazel" ? failedJobs : [],
       })),
@@ -373,7 +374,7 @@ test("the builds of a pull request's merge commit are followed by its owner once
       yield* resources.observe(facts({ state: "merged", mergeCommit: commit }))
       expect((yield* resources.list(session)).resources).toMatchObject([
         { resource: "o/r#1", relation: "owns" },
-        { resource: `builds:${commit}`, relation: "owns" },
+        { resource: `builds:o/r@${commit}`, relation: "owns" },
       ])
       expect((yield* resources.list(waiting)).resources).toMatchObject([{ resource: "o/r#1" }])
       expect(yield* resources.watched).toEqual([buildsRef])

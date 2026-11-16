@@ -3,6 +3,7 @@ import * as Config from "../config.ts"
 import type { Env } from "../env.ts"
 import * as Telemetry from "../telemetry.ts"
 import * as Buildkite from "./buildkite.ts"
+import * as CommitBuilds from "./commit-builds.ts"
 import * as GitHub from "./github.ts"
 import * as HubBinding from "./hub-binding.ts"
 import * as IncidentIo from "./incident-io.ts"
@@ -14,16 +15,20 @@ import * as SignIns from "./sign-ins.ts"
 const layer = (env: Env, config: Config.Gateway) =>
   Layer.mergeAll(
     OpenCode.layer(config.opencode),
-    GitHub.layer(config.github),
     Linear.layer({ url: config.signIns.linear.resource }),
     IncidentIo.layer({ url: config.signIns["incident-io"].resource }),
-    Buildkite.layer({
-      url: config.signIns.buildkite.resource,
-      organization: config.buildkite.organization,
-      settle: "5 seconds",
-    }),
+    CommitBuilds.layerWithoutDependencies({ settle: "5 seconds", fresh: "20 seconds" }),
     HubBinding.layer(env.HUB),
   )
+    .pipe(
+      // The builds that carry a commit are read from both.
+      Layer.provideMerge(
+        Layer.mergeAll(
+          GitHub.layer(config.github),
+          Buildkite.layer({ url: config.signIns.buildkite.resource, organization: config.buildkite.organization }),
+        ),
+      ),
+    )
     .pipe(Layer.provideMerge(SignIns.layer(env.SIGN_IN, config.signIns)))
     .pipe(Layer.provideMerge(Telemetry.layer(config.tracing, "ratchet-gateway")))
 

@@ -41,9 +41,10 @@ const instructions = `Ratchet tracks this session's work as tasks. A session wor
   resource_set_status. The Linear issue a task owns is that task's ticket, and one task at most owns an issue.
   Ratchet messages this session when someone else comments on the issue, when it goes to another person, and
   when the issue or the incident ends.
-- When a pull request this session owns merges, Ratchet follows the builds its merge commit starts on the
-  base branch, and messages this session when one of them fails. Such a failure is this session's to look
-  at: read the build, and say so when an earlier commit caused it.`
+- When a pull request this session owns merges, Ratchet follows the builds that carry its merge commit on
+  the base branch, and messages this session when one of them fails. Such a build often carries other
+  people's changes as well. The failure is this session's to look at: read the build, and say so when
+  another change caused it.`
 
 const Failure = Schema.Struct({ message: Schema.String })
 
