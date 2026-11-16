@@ -44,7 +44,11 @@ const instructions = `Ratchet tracks this session's work as tasks. A session wor
 - When a pull request this session owns merges, Ratchet follows the builds that carry its merge commit on
   the base branch, and messages this session when one of them fails. Such a build often carries other
   people's changes as well. The failure is this session's to look at: read the build, and say so when
-  another change caused it.`
+  another change caused it.
+- Ratchet also follows the Spacelift runs that apply the merged change, on the stacks that planned the pull
+  request. It messages this session when a run waits for someone to confirm it or for an approval, fails,
+  or is discarded. A run that waits applies a change to real infrastructure: read its plan and tell the
+  user what it would change. Confirm it only when the user has asked this session to.`
 
 const Failure = Schema.Struct({ message: Schema.String })
 

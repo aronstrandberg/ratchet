@@ -351,7 +351,7 @@ test("the owner of a commit's builds is woken when one fails, told what the comm
     }),
   ))
 
-test("the builds of a pull request's merge commit are followed by its owner once it merges, and by nobody who waits on it", () =>
+test("the builds and the runs of a pull request's merge commit are followed by its owner once it merges, and by nobody who waits on it", () =>
   run(
     Effect.gen(function* () {
       const { pullRequests: resources, outside, tasks } = yield* setUp()
@@ -370,14 +370,16 @@ test("the builds of a pull request's merge commit are followed by its owner once
       yield* resources.register(session, ref, "owns")
       yield* resources.register(waiting, ref, "waits_on")
       yield* outside.publish(builds("running"))
+      yield* outside.publish(runs("PLANNING"))
 
       yield* resources.observe(facts({ state: "merged", mergeCommit: commit }))
       expect((yield* resources.list(session)).resources).toMatchObject([
         { resource: "o/r#1", relation: "owns" },
         { resource: `builds:o/r@${commit}`, relation: "owns" },
+        { resource: `runs:o/r@${commit}`, relation: "owns" },
       ])
       expect((yield* resources.list(waiting)).resources).toMatchObject([{ resource: "o/r#1" }])
-      expect(yield* resources.watched).toEqual([buildsRef])
+      expect(yield* resources.watched).toEqual([buildsRef, runsRef])
 
       const failed = yield* resources.observe(builds("failed", 1, ["test"]))
       expect(failed).toEqual({ changes: ["BuildFailed"], woke: 1 })
@@ -386,6 +388,9 @@ test("the builds of a pull request's merge commit are followed by its owner once
         [waiting, "- It merged."],
         [session, "- Build bazel #1 failed in test: https://buildkite.com/lovable/bazel/builds/1"],
       ])
+
+      const unconfirmed = yield* resources.observe(runs("UNCONFIRMED"))
+      expect(unconfirmed).toEqual({ changes: ["RunWaits"], woke: 1 })
     }),
   ))
 
