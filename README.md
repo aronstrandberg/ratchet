@@ -33,10 +33,11 @@ The first run creates the checkout. `scripts/dev-vars.sh` writes its
 | --- | --- |
 | `GITHUB_TOKEN` | Reading pull requests. Required |
 
-Ratchet reads Linear, incident.io and Buildkite through their MCP servers,
-signed in as me with OAuth, and holds no key for any of them. To sign in, open
-the address that `GET /gateway/sign-ins/linear/login` answers with (or
-`incident-io`, `buildkite`, `webhook-proxy`) in a browser. The browser is sent
+Ratchet reads Linear, incident.io and Buildkite through their MCP servers and
+Spacelift through its GraphQL API, signed in as me with OAuth, and holds no key
+for any of them. To sign in, open the address that
+`GET /gateway/sign-ins/linear/login` answers with (or `incident-io`,
+`buildkite`, `spacelift`, `webhook-proxy`) in a browser. The browser is sent
 back to `127.0.0.1:9876`: when it runs on another machine, the page does not
 load, and requesting the address it shows from this machine finishes the
 sign-in. Ratchet renews the token from then on. Until someone has signed in, an
@@ -51,7 +52,7 @@ followed.
 | `GET /prs` | Returns the pull requests alone |
 | `POST /mcp` | The tools sessions call |
 | `GET /gateway/sign-ins` | Says where Ratchet's sign-in to each system stands: `signed-out`, `pending` or `signed-in` |
-| `GET /gateway/sign-ins/<system>/login` | Starts a sign-in to `webhook-proxy`, `linear`, `incident-io` or `buildkite`, and returns the address to open in a browser |
+| `GET /gateway/sign-ins/<system>/login` | Starts a sign-in to `webhook-proxy`, `linear`, `incident-io`, `buildkite` or `spacelift`, and returns the address to open in a browser |
 | `GET /gateway/sign-ins/<system>/callback` | Finishes the sign-in. The browser is sent here, on the machine Ratchet runs on |
 
 State lives in `.celld/dev` of the service's checkout.

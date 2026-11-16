@@ -1,4 +1,4 @@
-import { Context, Effect, Layer, Option, Redacted, Ref, Schema } from "effect"
+import { Clock, Context, Effect, Layer, Option, Redacted, Ref, Schema } from "effect"
 import { FetchHttpClient, HttpClient, HttpClientRequest, HttpClientResponse } from "effect/http"
 import { causeText } from "../failure.ts"
 import type { CommitBuildsRef } from "../protocol/builds.ts"
@@ -42,6 +42,8 @@ export interface Landing {
   readonly title: string
   /** The branch the pull request merged into. */
   readonly branch: string
+  /** The commits the pull request held when it merged, up to a hundred: what plans ran on before the merge. */
+  readonly proposed: ReadonlyArray<string>
   /**
    * The commit and the commits that came onto the branch after it, the oldest first. They end three hours
    * after the commit was made, or at the branch's newest commit.
@@ -165,7 +167,10 @@ const mergedQuery = `query($owner: String!, $repo: String!, $commit: GitObjectID
     object(oid: $commit) {
       ... on Commit {
         messageHeadline committedDate
-        associatedPullRequests(first: 10) { nodes { state baseRefName mergeCommit { oid } } }
+        associatedPullRequests(first: 10) { nodes {
+          state baseRefName mergeCommit { oid }
+          commits(first: 100) { nodes { commit { oid } } }
+        } }
       }
     }
   }
@@ -187,6 +192,9 @@ const Merged = Schema.Struct({
                       Schema.Struct({
                         state: Schema.String,
                         baseRefName: Schema.String,
+                        commits: Schema.Struct({
+                          nodes: Schema.Array(Schema.Struct({ commit: Schema.Struct({ oid: Schema.String }) })),
+                        }),
                         mergeCommit: Schema.NullOr(Schema.Struct({ oid: Schema.String })),
                       }),
                     ),
@@ -242,6 +250,9 @@ const followedFor = 3 * 60 * 60_000
 
 /** The most pages of a branch's history that one read takes: a hundred commits each. */
 const historyPages = 5
+
+/** How long a landing is kept, so that what reads the same commit in one round asks GitHub once. */
+const landingFresh = 20_000
 
 // SAFETY: toLowerCase of a string literal is the literal that Lowercase names.
 const lower = <A extends string>(value: A) => value.toLowerCase() as Lowercase<A>
@@ -341,7 +352,14 @@ export const make = (config: Config): Effect.Effect<Interface, never, HttpClient
       )
 
     // Where and when a commit was merged never changes.
-    const merges = yield* Ref.make(new Map<string, { readonly title: string; readonly branch: string; readonly at: Date }>())
+    const merges = yield* Ref.make(
+      new Map<
+        string,
+        { readonly title: string; readonly branch: string; readonly proposed: ReadonlyArray<string>; readonly at: Date }
+      >(),
+    )
+
+    const landings = yield* Ref.make(new Map<string, { readonly at: number; readonly landing: Landing }>())
 
     const mergeOf = Effect.fnUntraced(function* (ref: CommitBuildsRef) {
       const known = (yield* Ref.get(merges)).get(ref.commit)
@@ -357,7 +375,13 @@ export const make = (config: Config): Effect.Effect<Interface, never, HttpClient
 
       if (commit?.committedDate === undefined || pullRequest === undefined) return yield* new CommitNotMerged(ref)
 
-      const merge = { title: commit.messageHeadline ?? "", branch: pullRequest.baseRefName, at: commit.committedDate }
+      const merge = {
+        title: commit.messageHeadline ?? "",
+        branch: pullRequest.baseRefName,
+        proposed: pullRequest.commits.nodes.map((node) => node.commit.oid),
+        at: commit.committedDate,
+      }
+
       yield* Ref.update(merges, (held) => new Map(held).set(ref.commit, merge))
 
       return merge
@@ -365,6 +389,10 @@ export const make = (config: Config): Effect.Effect<Interface, never, HttpClient
 
     const landing = Effect.fn("GitHub.landing")(function* (ref: CommitBuildsRef) {
       yield* Effect.annotateCurrentSpan("github.commit", ref.commit)
+      const now = yield* Clock.currentTimeMillis
+      const held = (yield* Ref.get(landings)).get(ref.commit)
+
+      if (held !== undefined && now - held.at < landingFresh) return held.landing
 
       const merge = yield* mergeOf(ref)
       const { owner, repo } = ref
@@ -390,7 +418,20 @@ export const make = (config: Config): Effect.Effect<Interface, never, HttpClient
       // A commit that the pages did not reach is older than all of them, so every commit read came after it.
       const followers = position === -1 ? newestFirst : newestFirst.slice(0, position)
 
-      return { title: merge.title, branch: merge.branch, commits: [ref.commit, ...followers.toReversed()] }
+      const landing = {
+        title: merge.title,
+        branch: merge.branch,
+        proposed: merge.proposed,
+        commits: [ref.commit, ...followers.toReversed()],
+      }
+
+      yield* Ref.update(landings, (map) => {
+        const kept = [...map].filter(([, entry]) => now - entry.at < landingFresh)
+
+        return new Map(kept).set(ref.commit, { at: now, landing })
+      })
+
+      return landing
     })
 
     return Service.of({ read, landing })

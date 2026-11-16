@@ -1,6 +1,7 @@
 import { Effect } from "effect"
 import { ReadReply, labelOf } from "../protocol/resource.ts"
 import type * as CommitBuilds from "./commit-builds.ts"
+import type * as CommitRuns from "./commit-runs.ts"
 import type * as GitHub from "./github.ts"
 import * as HubReports from "./hub-reports.ts"
 import type * as IncidentIo from "./incident-io.ts"
@@ -23,7 +24,7 @@ export interface Round {
 export const round: Effect.Effect<
   Round,
   HubReports.HubUnavailable,
-  GitHub.Service | Linear.Service | IncidentIo.Service | CommitBuilds.Service | HubReports.Service
+  GitHub.Service | Linear.Service | IncidentIo.Service | CommitBuilds.Service | CommitRuns.Service | HubReports.Service
 > = Effect.gen(function* () {
   const hub = yield* HubReports.Service
   const refs = yield* hub.watchedResources

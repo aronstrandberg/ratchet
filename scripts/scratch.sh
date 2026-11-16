@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Runs a scratch Ratchet for trying a change end to end: its own empty state, a stand-in for OpenCode, Linear,
-# incident.io and Buildkite (scripts/fake-outside.ts), and the real GitHub, which it only reads. Nothing reaches a real
+# incident.io, Buildkite and Spacelift (scripts/fake-outside.ts), and the real GitHub, which it only reads. Nothing reaches a real
 # session, issue or incident.
 #
 #   scripts/scratch.sh [port]     Ratchet on the port (9877), the stand-in on the next one
@@ -24,16 +24,17 @@ umask 077
   echo "LINEAR_MCP_URL=http://127.0.0.1:$fake/linear/mcp"
   echo "INCIDENT_IO_MCP_URL=http://127.0.0.1:$fake/incident/mcp"
   echo "BUILDKITE_MCP_URL=http://127.0.0.1:$fake/buildkite/mcp"
+  echo "SPACELIFT_URL=http://127.0.0.1:$fake/spacelift"
   # Without a token the scratch Ratchet starts, and reading a pull request fails.
   if [ -f "$secrets" ]; then grep '^GITHUB_TOKEN=' "$secrets" || echo "GITHUB_TOKEN=none"; else echo "GITHUB_TOKEN=none"; fi
 } > .dev.vars
 rm -rf .celld
 
-# Signs the scratch Ratchet in to the stand-ins for Linear, incident.io and Buildkite once it answers. The stand-in approves
+# Signs the scratch Ratchet in to the stand-ins for Linear, incident.io, Buildkite and Spacelift once it answers. The stand-in approves
 # without asking, so following the sign-in address to the end is the whole sign-in.
 (
   until curl --silent --fail --max-time 2 --output /dev/null "http://127.0.0.1:$port/gateway/sign-ins"; do sleep 1; done
-  for system in linear incident-io buildkite; do
+  for system in linear incident-io buildkite spacelift; do
     curl --silent --location --max-time 20 --output /dev/null \
       "$(curl --silent --max-time 20 "http://127.0.0.1:$port/gateway/sign-ins/$system/login" | jq -r .open)"
   done

@@ -413,3 +413,47 @@ test("a merge commit that started no build, and a pull request that was merged b
       expect(yield* resources.watched).toEqual([])
     }),
   ))
+
+const runsRef = ResourceRef.cases.CommitRuns.make({ owner: "o", repo: "r", commit })
+
+/** The runs of the commit: one on `iam` in the state given, and one on `dns` that finished. */
+const runs = (state: string): ResourceFacts =>
+  ResourceFacts.cases.CommitRuns.make({
+    facts: {
+      ref: { owner: "o", repo: "r", commit },
+      title: "Give the role a binding (#12)",
+      runs: ["dns", "iam"].map((stack) => ({
+        id: `${stack}-1`,
+        stack,
+        state: stack === "iam" ? state : "FINISHED",
+        needsApproval: false,
+        url: `https://spacelift.test/stack/${stack}/run/${stack}-1`,
+        commit,
+        createdAt: Date.now() - 60_000,
+        updatedAt: Date.now() - 60_000,
+        delta: stack === "iam" ? { add: 2, change: 0, delete: 1 } : null,
+      })),
+    },
+  })
+
+test("the owner of a commit's runs is woken when one waits to be confirmed, and the board shows which stack waits", () =>
+  run(
+    Effect.gen(function* () {
+      const { pullRequests: resources, outside } = yield* setUp("Give the role a binding", runs("PLANNING"))
+      yield* resources.register(session, runsRef, "owns")
+
+      const waiting = yield* resources.observe(runs("UNCONFIRMED"))
+      expect(waiting).toEqual({ changes: ["RunWaits"], woke: 1 })
+      expect((yield* outside.wakes)[0]?.text).toContain(
+        'Ratchet: the Spacelift runs of commit ab12ab12a, "Give the role a binding (#12)", changed.\n- The run on iam waits for someone to confirm it. Its plan adds 2, changes 0 and deletes 1. https://spacelift.test/stack/iam/run/iam-1',
+      )
+
+      expect((yield* resources.list(session)).resources).toMatchObject([
+        { label: "the Spacelift runs of commit ab12ab12a", state: "1 waiting, 1 finished", ended: null },
+      ])
+
+      const rows = yield* Effect.flatMap(Index.Service, (index) => index.resources("all"))
+      expect(rows).toMatchObject([{ kind: "commit_runs", detail: { waiting: ["iam"], failed: [] } }])
+      expect(yield* resources.watched).toEqual([runsRef])
+    }),
+  ))

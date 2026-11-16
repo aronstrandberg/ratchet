@@ -14,6 +14,7 @@ import {
 } from "../protocol/resource.ts"
 import * as Cells from "./cells.ts"
 import * as CommitBuilds from "./commit-builds.ts"
+import * as CommitRuns from "./commit-runs.ts"
 import * as Incident from "./incident.ts"
 import * as Index from "./index-store.ts"
 import * as LinearIssue from "./linear-issue.ts"
@@ -229,6 +230,12 @@ const commitBuildsStanding = (state: CommitBuilds.CommitBuildsState): Standing =
   state: CommitBuilds.summaryOf(state),
 })
 
+const commitRunsStanding = (state: CommitRuns.CommitRunsState): Standing => ({
+  subscribers: state.subscribers,
+  outcome: CommitRuns.outcomeOf(state),
+  state: CommitRuns.summaryOf(state),
+})
+
 const owns = (subscriber: Subscriber) => subscriber.relation === "owns"
 
 /** The task a wake-up is about, as the woken session should read it. */
@@ -291,6 +298,13 @@ export const make = Effect.gen(function* () {
           ),
         detach: (task) =>
           Effect.map(cells.sendCommitBuilds(key, CommitBuilds.CommitBuildsEvent.Detached({ task })), commitBuildsStanding),
+      }),
+      CommitRuns: (): Cell => ({
+        standing: Effect.map(cells.commitRuns(key), commitRunsStanding),
+        attach: (subscriber) =>
+          Effect.map(cells.sendCommitRuns(key, CommitRuns.CommitRunsEvent.Attached({ subscriber })), commitRunsStanding),
+        detach: (task) =>
+          Effect.map(cells.sendCommitRuns(key, CommitRuns.CommitRunsEvent.Detached({ task })), commitRunsStanding),
       }),
     })
   }
@@ -396,6 +410,29 @@ export const make = Effect.gen(function* () {
               tag: change._tag,
               text: CommitBuilds.describe(change),
               wakes: (relation: Relation) => CommitBuilds.wakes(relation, change),
+            })),
+          }
+        }),
+      CommitRuns: ({ facts }) =>
+        Effect.gen(function* () {
+          const before = yield* cells.commitRuns(key)
+          const at = yield* Clock.currentTimeMillis
+          const named = facts.title === "" ? label : `${label}, "${facts.title}",`
+
+          if (CommitRuns.repeats(before, facts, at)) {
+            return { label: named, standing: commitRunsStanding(before), version: "", notices: [] }
+          }
+
+          const after = yield* cells.sendCommitRuns(key, CommitRuns.CommitRunsEvent.Observed({ facts, at }))
+
+          return {
+            label: named,
+            standing: commitRunsStanding(after),
+            version: "",
+            notices: CommitRuns.changes(before, after).map((change) => ({
+              tag: change._tag,
+              text: CommitRuns.describe(change),
+              wakes: (relation: Relation) => CommitRuns.wakes(relation, change),
             })),
           }
         }),

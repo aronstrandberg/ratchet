@@ -28,7 +28,7 @@ const reading = (branch: ReadonlyArray<string>, builds: { current: ReadonlyArray
     GitHub.Service,
     GitHub.Service.of({
       read: (pullRequest) => Effect.fail(new GitHub.PullRequestNotFound(pullRequest)),
-      landing: () => Effect.succeed({ title: "Speed up the build (#12)", branch: "main", commits: branch }),
+      landing: () => Effect.succeed({ title: "Speed up the build (#12)", branch: "main", proposed: [], commits: branch }),
     }),
   )
 

@@ -15,6 +15,9 @@ const ref: fc.Arbitrary<ResourceRef> = fc.oneof(
   fc
     .record({ owner: name, repo: name, commit: fc.stringMatching(/^[0-9a-f]{40}$/) })
     .map((fields) => ResourceRef.cases.CommitBuilds.make(fields)),
+  fc
+    .record({ owner: name, repo: name, commit: fc.stringMatching(/^[0-9a-f]{40}$/) })
+    .map((fields) => ResourceRef.cases.CommitRuns.make(fields)),
 )
 
 /** A reference as its key spells it: a pull request's owner and repository in lower case. */
@@ -26,6 +29,8 @@ const canonical = (resource: ResourceRef): ResourceRef =>
     Incident: (incident) => incident,
     CommitBuilds: ({ owner, repo, commit }) =>
       ResourceRef.cases.CommitBuilds.make({ owner: owner.toLowerCase(), repo: repo.toLowerCase(), commit }),
+    CommitRuns: ({ owner, repo, commit }) =>
+      ResourceRef.cases.CommitRuns.make({ owner: owner.toLowerCase(), repo: repo.toLowerCase(), commit }),
   })
 
 test("a resource's key names that resource again", () => {
