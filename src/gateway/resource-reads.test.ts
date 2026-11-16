@@ -1,6 +1,7 @@
 import { afterAll, beforeEach, expect, test } from "bun:test"
 import { Effect, Layer, Redacted } from "effect"
 import { ReadReply, ResourceFacts, ResourceRef } from "../protocol/resource.ts"
+import * as Buildkite from "./buildkite.ts"
 import * as FakeMcp from "./fake-mcp.ts"
 import * as GitHub from "./github.ts"
 import * as IncidentIo from "./incident-io.ts"
@@ -14,7 +15,24 @@ interface Tools {
   readonly list_comments: FakeMcp.Tool
   readonly get_user: FakeMcp.Tool
   readonly incident_show: FakeMcp.Tool
+  readonly list_builds: FakeMcp.Tool
+  readonly get_build: FakeMcp.Tool
+  readonly list_jobs: FakeMcp.Tool
 }
+
+const commit = "ab12".repeat(10)
+
+/** A build of the commit as Buildkite lists it: with its address, and without its pipeline or what started it. */
+const listedBuild = (pipeline: string, number: number, state: string, branch = "main") => ({
+  id: `${pipeline}-${number}`,
+  branch,
+  commit,
+  state,
+  number,
+  message: "Speed up the build (#12)\n\nA long description.",
+  created_at: `2026-11-16T10:00:0${number}.000Z`,
+  web_url: `https://buildkite.com/lovable/${pipeline}/builds/${number}`,
+})
 
 const working: Tools = {
   get_issue: () => ({
@@ -51,6 +69,31 @@ const working: Tools = {
           },
         }
       : { problem: '{"type":"not_found","errors":[{"code":"not_found","message":"incident not found"}]}' },
+  list_builds: (input) => ({
+    value: {
+      items:
+        input["commit"] === commit
+          ? [
+              listedBuild("nightly", 4, "failed"),
+              listedBuild("deploy", 3, "running"),
+              listedBuild("bazel", 2, "failed"),
+              listedBuild("merge-queue", 1, "passed", "gh-readonly-queue/main/pr-12-abc"),
+            ]
+          : [],
+    },
+  }),
+  get_build: (input) => ({ value: { source: input["pipeline_slug"] === "nightly" ? "schedule" : "webhook" } }),
+  list_jobs: (input) => ({
+    value: {
+      items:
+        input["state"] === "failed,timed_out"
+          ? [
+              { id: "j1", name: ":bazel: Test", step_key: "bazel-test", state: "failed" },
+              { id: "j2", name: "Lint", step_key: null, state: "timed_out" },
+            ]
+          : [],
+    },
+  }),
 }
 
 /** What the stand-in answers now. A test that needs a tool to fail replaces it. */
@@ -67,14 +110,29 @@ const linear = FakeMcp.make(
 
 const incidentIo = FakeMcp.make({ incident_show: (input) => tools.incident_show(input) }, { streamed: false })
 
-// The two systems on a port of their own. Each accepts the token "good" and refuses any other.
+const buildkite = FakeMcp.make(
+  {
+    list_builds: (input) => tools.list_builds(input),
+    get_build: (input) => tools.get_build(input),
+    list_jobs: (input) => tools.list_jobs(input),
+  },
+  { streamed: false },
+)
+
+const systems = new Map([
+  ["/linear/mcp", linear],
+  ["/incident/mcp", incidentIo],
+  ["/buildkite/mcp", buildkite],
+])
+
+// The systems on a port of their own. Each accepts the token "good" and refuses any other.
 const server = Bun.serve({
   port: 0,
   hostname: "127.0.0.1",
   fetch: (request) => {
     if (request.headers.get("authorization") !== "Bearer good") return new Response("sign in first\n", { status: 401 })
 
-    return new URL(request.url).pathname === "/linear/mcp" ? linear.fetch(request) : incidentIo.fetch(request)
+    return (systems.get(new URL(request.url).pathname) ?? linear).fetch(request)
   },
 })
 
@@ -87,7 +145,12 @@ const signIns = (tokens: ReadonlyArray<string>) => {
   return Layer.succeed(
     SignIns.Service,
     SignIns.Service.of({
-      statuses: Effect.succeed({ "webhook-proxy": "signed-out", linear: "signed-in", "incident-io": "signed-in" }),
+      statuses: Effect.succeed({
+        "webhook-proxy": "signed-out",
+        linear: "signed-in",
+        "incident-io": "signed-in",
+        buildkite: "signed-in",
+      }),
       begin: () => Effect.succeed(""),
       complete: () => Effect.void,
       token: (system) => {
@@ -103,12 +166,13 @@ const signIns = (tokens: ReadonlyArray<string>) => {
   )
 }
 
-/** The gateway's connections to Linear and incident.io, on the stand-in and the tokens given. */
+/** The gateway's connections to Linear, incident.io and Buildkite, on the stand-in and the tokens given. */
 const outside = (tokens: ReadonlyArray<string>) =>
   Layer.mergeAll(
     GitHub.layer({ token: Redacted.make("unused") }),
     Linear.layer({ url: `http://127.0.0.1:${server.port}/linear/mcp` }),
     IncidentIo.layer({ url: `http://127.0.0.1:${server.port}/incident/mcp` }),
+    Buildkite.layer({ url: `http://127.0.0.1:${server.port}/buildkite/mcp`, organization: "lovable", settle: 0 }),
   ).pipe(Layer.provide(signIns(tokens)))
 
 const read = (ref: ResourceRef, tokens: ReadonlyArray<string> = ["good"]) =>
@@ -195,4 +259,45 @@ test("an incident is read by its reference, in the API's words for its status, a
     }),
   )
   expect(missing).toEqual(ReadReply.cases.NotFound.make({}))
+})
+
+test("the builds of a commit are the ones its arrival started: not one on a schedule, not the merge queue's", async () => {
+  const reply = await read(ResourceRef.cases.CommitBuilds.make({ commit }))
+
+  expect(reply).toEqual(
+    ReadReply.cases.Read.make({
+      observed: ResourceFacts.cases.CommitBuilds.make({
+        facts: {
+          ref: { commit },
+          title: "Speed up the build (#12)",
+          builds: [
+            {
+              id: "bazel-2",
+              pipeline: "bazel",
+              number: 2,
+              state: "failed",
+              url: "https://buildkite.com/lovable/bazel/builds/2",
+              createdAt: Date.parse("2026-11-16T10:00:02.000Z"),
+              failedJobs: ["bazel-test", "Lint"],
+            },
+            {
+              id: "deploy-3",
+              pipeline: "deploy",
+              number: 3,
+              state: "running",
+              url: "https://buildkite.com/lovable/deploy/builds/3",
+              createdAt: Date.parse("2026-11-16T10:00:03.000Z"),
+              failedJobs: [],
+            },
+          ],
+        },
+      }),
+    }),
+  )
+})
+
+test("a commit that started no build is answered as not found", async () => {
+  expect(await read(ResourceRef.cases.CommitBuilds.make({ commit: "cd34".repeat(10) }))).toEqual(
+    ReadReply.cases.NotFound.make({}),
+  )
 })

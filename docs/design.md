@@ -219,7 +219,7 @@ orchestrator query it. No query fans out over cells.
 | OpenCode | Event stream | HTTP API on loopback: wake a session, fork, set metadata | The local service's credential |
 | GitHub | Webhook proxy stream | REST and GraphQL | A token from the settings. GitHub's sign-in takes no client that registers itself, so OAuth there needs an app of its own |
 | Webhook proxy | Its stream | OAuth at `lovable.dev/oauth`, then `watch_events` or the direct stream URL | One OAuth grant with a refresh token |
-| Linear, incident.io | Polling | Their MCP servers over HTTP | An OAuth sign-in each, renewed by the gateway |
+| Linear, incident.io, Buildkite | Polling | Their MCP servers over HTTP | An OAuth sign-in each, renewed by the gateway |
 | Slack | Polling | Its MCP server over HTTP | OAuth |
 
 The proxy accepts a bearer token whose audience names the app, which an OAuth
@@ -308,6 +308,7 @@ provider. The second iteration adds the GitHub adapter.
 | Deploy | The service runs from its own checkout. `scripts/deploy.sh` moves it to `origin/main` after the checks pass |
 | Sign-ins | The gateway signs in to a system with OAuth, as an MCP client does: it asks the system where its sign-in server is, registers itself there as a client, and sends me to a browser once. `src/gateway/grant.ts` is the grant, and one Durable Object per system holds it and renews its token, so a refresh token that the system honours once is never used twice. The systems are the webhook proxy, Linear and incident.io. `GET /gateway/sign-ins` says where each stands |
 | Linear issues and incidents | A task follows a Linear issue or an incident.io incident the way it follows a pull request: a cell per resource, an observation read by the gateway once a minute, typed changes, wake-ups by relation. `resource_register` takes an address or a short name. The gateway reads both through their MCP servers, signed in as me, and holds no key for either. Until someone signs in, reads of that kind fail and nothing else does. Read against stand-ins only so far: the real servers need the sign-ins |
+| Builds of a commit | A fourth kind of resource: the Buildkite builds that a commit's arrival on its branch started, by the commit's hash. `src/gateway/buildkite.ts` lists the commit's builds through Buildkite's MCP server, leaves out builds on a schedule and the merge queue's, and reads the failed jobs of a failed build. The cell reports a build's first failure and its passing after a retry, and settles once every build has been over for a quarter of an hour, or after a day |
 | Tracing | Spans over OTLP to the local collector when `OTLP_URL` is set. The collector and ClickHouse are user services in `dotfiles-lovable/nix/ratchet.nix` |
 
 Differences from the design above, found while building:

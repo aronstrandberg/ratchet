@@ -1,4 +1,5 @@
 import { Option, Schema } from "effect"
+import { CommitBuildsFacts, CommitBuildsRef } from "./builds.ts"
 import { IncidentFacts, IncidentRef } from "./incident.ts"
 import { LinearIssueFacts, LinearIssueRef } from "./linear.ts"
 import { PullRequestFacts, PullRequestRef } from "./pull-request.ts"
@@ -8,16 +9,18 @@ export const ResourceRef = Schema.TaggedUnion({
   PullRequest: PullRequestRef.fields,
   LinearIssue: LinearIssueRef.fields,
   Incident: IncidentRef.fields,
+  CommitBuilds: CommitBuildsRef.fields,
 })
 
 export type ResourceRef = typeof ResourceRef.Type
 
 /**
  * The name a resource is known by across the hub, in lower case: `owner/repo#number` for a pull request,
- * `linear:dx-1550` for a Linear issue, `incident:123` for an incident.
+ * `linear:dx-1550` for a Linear issue, `incident:123` for an incident, `builds:` and the commit's hash for
+ * the builds of a commit.
  */
 export const ResourceKey = Schema.String.pipe(
-  Schema.check(Schema.isPattern(/^([a-z0-9_.-]+\/[a-z0-9_.-]+#[1-9][0-9]*|linear:[a-z][a-z0-9]*-[1-9][0-9]*|incident:[1-9][0-9]*)$/)),
+  Schema.check(Schema.isPattern(/^([a-z0-9_.-]+\/[a-z0-9_.-]+#[1-9][0-9]*|linear:[a-z][a-z0-9]*-[1-9][0-9]*|incident:[1-9][0-9]*|builds:[0-9a-f]{40})$/)),
   Schema.brand("ResourceKey"),
 )
 
@@ -30,12 +33,14 @@ export const keyOf = (ref: ResourceRef): ResourceKey =>
       PullRequest: ({ owner, repo, number }) => `${owner}/${repo}#${number}`.toLowerCase(),
       LinearIssue: ({ identifier }) => `linear:${identifier.toLowerCase()}`,
       Incident: ({ number }) => `incident:${number}`,
+      CommitBuilds: ({ commit }) => `builds:${commit}`,
     }),
   )
 
 const parsePullRequest = Schema.decodeUnknownOption(PullRequestRef)
 const parseLinearIssue = Schema.decodeUnknownOption(LinearIssueRef)
 const parseIncident = Schema.decodeUnknownOption(IncidentRef)
+const parseCommitBuilds = Schema.decodeUnknownOption(CommitBuildsRef)
 
 const pullRequest = (owner: string | undefined, repo: string | undefined, number: string | undefined) =>
   Option.map(parsePullRequest({ owner, repo, number: Number(number) }), (ref) => ResourceRef.cases.PullRequest.make(ref))
@@ -46,9 +51,14 @@ const linearIssue = (identifier: string | undefined) =>
 const incident = (number: string | undefined) =>
   Option.map(parseIncident({ number: Number(number) }), (ref) => ResourceRef.cases.Incident.make(ref))
 
+const commitBuilds = (commit: string | undefined) =>
+  Option.map(parseCommitBuilds({ commit }), (ref) => ResourceRef.cases.CommitBuilds.make(ref))
+
 /** The resource a key names. */
 export const refOf = (key: ResourceKey): Option.Option<ResourceRef> => {
   if (key.startsWith("linear:")) return linearIssue(key.slice("linear:".length))
+
+  if (key.startsWith("builds:")) return commitBuilds(key.slice("builds:".length))
 
   if (key.startsWith("incident:")) return incident(key.slice("incident:".length))
 
@@ -64,6 +74,7 @@ export const labelOf = (ref: ResourceRef): string =>
     PullRequest: ({ owner, repo, number }) => `pull request ${owner}/${repo}#${number}`,
     LinearIssue: ({ identifier }) => `Linear issue ${identifier}`,
     Incident: ({ number }) => `incident INC-${number}`,
+    CommitBuilds: ({ commit }) => `the builds of commit ${commit.slice(0, 9)}`,
   })
 
 const shorthand = [
@@ -77,6 +88,8 @@ const shorthand = [
   // A Linear issue: its address on Linear, its identifier, or its key.
   { pattern: /^https:\/\/linear\.app\/[\w.-]+\/issue\/([A-Za-z][A-Za-z0-9]*-\d+)(?:[/?#].*)?$/, kind: "LinearIssue" },
   { pattern: /^(?:linear:)?([A-Za-z][A-Za-z0-9]*-\d+)$/, kind: "LinearIssue" },
+  // The builds of a commit: their key. The hub follows them itself when a pull request merges.
+  { pattern: /^builds:([0-9a-f]{40})$/, kind: "CommitBuilds" },
 ] as const
 
 /**
@@ -97,6 +110,8 @@ export const parseReference = (text: string): Option.Option<ResourceRef> => {
         return incident(first)
       case "LinearIssue":
         return linearIssue(first)
+      case "CommitBuilds":
+        return commitBuilds(first)
     }
   }
 
@@ -126,6 +141,7 @@ export const ResourceFacts = Schema.TaggedUnion({
   PullRequest: { facts: PullRequestFacts },
   LinearIssue: { facts: LinearIssueFacts },
   Incident: { facts: IncidentFacts },
+  CommitBuilds: { facts: CommitBuildsFacts },
 })
 
 export type ResourceFacts = typeof ResourceFacts.Type
@@ -136,6 +152,7 @@ export const subjectOf = (observed: ResourceFacts): ResourceRef =>
     PullRequest: ({ facts }) => ResourceRef.cases.PullRequest.make(facts.ref),
     LinearIssue: ({ facts }) => ResourceRef.cases.LinearIssue.make(facts.ref),
     Incident: ({ facts }) => ResourceRef.cases.Incident.make(facts.ref),
+    CommitBuilds: ({ facts }) => ResourceRef.cases.CommitBuilds.make(facts.ref),
   })
 
 /**

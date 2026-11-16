@@ -2,6 +2,7 @@ import { Context, Effect, Layer, Schema } from "effect"
 import { causeText } from "../failure.ts"
 import type { SessionId, TaskId } from "../protocol/ids.ts"
 import type { ResourceKey } from "../protocol/resource.ts"
+import { CommitBuildsEntity, type CommitBuildsEvent, type CommitBuildsState } from "./commit-builds.ts"
 import { IncidentEntity, type IncidentEvent, type IncidentState } from "./incident.ts"
 import * as Index from "./index-store.ts"
 import { LinearIssueEntity, type LinearIssueEvent, type LinearIssueState } from "./linear-issue.ts"
@@ -54,6 +55,12 @@ export interface Interface {
     key: ResourceKey,
     event: typeof IncidentEvent.Type,
   ) => Effect.Effect<IncidentState, CellUnavailable | Index.IndexError>
+  readonly commitBuilds: (key: ResourceKey) => Effect.Effect<CommitBuildsState, CellUnavailable>
+  /** Sends the builds of a commit an event and writes the state they answer with to the index. */
+  readonly sendCommitBuilds: (
+    key: ResourceKey,
+    event: typeof CommitBuildsEvent.Type,
+  ) => Effect.Effect<CommitBuildsState, CellUnavailable | Index.IndexError>
 }
 
 /** The hub's cells. */
@@ -69,6 +76,7 @@ export const make = Effect.gen(function* () {
   const pullRequests = yield* PullRequestEntity.client
   const linearIssues = yield* LinearIssueEntity.client
   const incidents = yield* IncidentEntity.client
+  const commitBuilds = yield* CommitBuildsEntity.client
 
   return Service.of({
     task: (id) => tasks(id).GetState().pipe(Effect.mapError(unavailable(`Task/${id}`))),
@@ -107,6 +115,14 @@ export const make = Effect.gen(function* () {
         .pipe(
           Effect.mapError(unavailable(`Incident/${key}`)),
           Effect.tap((state) => index.putIncident(key, state)),
+        ),
+    commitBuilds: (key) => commitBuilds(key).GetState().pipe(Effect.mapError(unavailable(`CommitBuilds/${key}`))),
+    sendCommitBuilds: (key, event) =>
+      commitBuilds(key)
+        .Send({ event })
+        .pipe(
+          Effect.mapError(unavailable(`CommitBuilds/${key}`)),
+          Effect.tap((state) => index.putCommitBuilds(key, state)),
         ),
   })
 })

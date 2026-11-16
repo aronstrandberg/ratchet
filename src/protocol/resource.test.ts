@@ -12,6 +12,7 @@ const ref: fc.Arbitrary<ResourceRef> = fc.oneof(
     .record({ team: fc.stringMatching(/^[A-Z][A-Z0-9]{0,6}$/), number })
     .map(({ team, number }) => ResourceRef.cases.LinearIssue.make({ identifier: `${team}-${number}` })),
   number.map((number) => ResourceRef.cases.Incident.make({ number })),
+  fc.stringMatching(/^[0-9a-f]{40}$/).map((commit) => ResourceRef.cases.CommitBuilds.make({ commit })),
 )
 
 /** A reference as its key spells it: a pull request's owner and repository in lower case. */
@@ -21,6 +22,7 @@ const canonical = (resource: ResourceRef): ResourceRef =>
       ResourceRef.cases.PullRequest.make({ owner: owner.toLowerCase(), repo: repo.toLowerCase(), number }),
     LinearIssue: (issue) => issue,
     Incident: (incident) => incident,
+    CommitBuilds: (builds) => builds,
   })
 
 test("a resource's key names that resource again", () => {
@@ -46,5 +48,8 @@ test("a resource is read from its address in a browser and from its short name",
   // The key the tools answer with is read back as the resource it names.
   expect(parseReference("linear:dx-1550")).toEqual(issue)
   expect(parseReference("incident:123")).toEqual(incident)
+  expect(parseReference(`builds:${"ab12".repeat(10)}`)).toEqual(
+    Option.some(ResourceRef.cases.CommitBuilds.make({ commit: "ab12".repeat(10) })),
+  )
   expect(parseReference("https://example.com/DX-1550")).toEqual(Option.none())
 })

@@ -5,7 +5,7 @@ import { Effect, Option, Schema } from "effect"
  *
  * GitHub is not one of them: the gateway reads it with a token from its settings.
  */
-export const System = Schema.Literals(["webhook-proxy", "linear", "incident-io"])
+export const System = Schema.Literals(["webhook-proxy", "linear", "incident-io", "buildkite"])
 
 export type System = typeof System.Type
 
