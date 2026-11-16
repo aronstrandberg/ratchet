@@ -13,6 +13,7 @@ import {
   subjectOf,
 } from "../protocol/resource.ts"
 import * as Cells from "./cells.ts"
+import * as CommitBuilds from "./commit-builds.ts"
 import * as Incident from "./incident.ts"
 import * as Index from "./index-store.ts"
 import * as LinearIssue from "./linear-issue.ts"
@@ -67,7 +68,10 @@ export const Followed = Schema.Struct({
   relation: Relation,
   status: WorkStatus,
   note: Schema.String,
-  /** Where the resource stands in its own system: a pull request's state, an issue's workflow state, an incident's status. */
+  /**
+   * Where the resource stands in its own system: a pull request's state, an issue's workflow state, an
+   * incident's status, or how many of a commit's builds are in each state.
+   */
   state: Schema.String,
   /** How it ended, or null while it can still change. */
   ended: Schema.NullOr(Outcome),
@@ -172,6 +176,8 @@ interface Cell {
 
 /** What an observation changed, in the form every kind of resource shares. */
 interface Applied {
+  /** What the resource is called in a wake-up. */
+  readonly label: string
   readonly standing: Standing
   readonly notices: ReadonlyArray<Notice>
   /** What tells one batch of changes from the next: a pull request's head, and nothing for other kinds. */
@@ -212,6 +218,12 @@ const incidentStanding = (state: Incident.IncidentState): Standing => ({
   state: Incident.IncidentState.$match(state, { Unseen: () => "unseen", Seen: ({ incident }) => incident.status.name }),
 })
 
+const commitBuildsStanding = (state: CommitBuilds.CommitBuildsState): Standing => ({
+  subscribers: state.subscribers,
+  outcome: CommitBuilds.outcomeOf(state),
+  state: CommitBuilds.summaryOf(state),
+})
+
 /** The task a wake-up is about, as the woken session should read it. */
 interface Subject {
   readonly title: string
@@ -219,9 +231,9 @@ interface Subject {
   readonly current: boolean
 }
 
-const wakeText = (ref: ResourceRef, relevant: ReadonlyArray<Notice>, subject: Subject) =>
+const wakeText = (label: string, relevant: ReadonlyArray<Notice>, subject: Subject) =>
   [
-    `Ratchet: ${labelOf(ref)} changed.`,
+    `Ratchet: ${label} changed.`,
     ...relevant.map((notice) => `- ${notice.text}`),
     subject.current
       ? `It belongs to your task "${subject.title}".`
@@ -263,6 +275,16 @@ export const make = Effect.gen(function* () {
           Effect.map(cells.sendIncident(key, Incident.IncidentEvent.Attached({ subscriber })), incidentStanding),
         detach: (task) => Effect.map(cells.sendIncident(key, Incident.IncidentEvent.Detached({ task })), incidentStanding),
       }),
+      CommitBuilds: (): Cell => ({
+        standing: Effect.map(cells.commitBuilds(key), commitBuildsStanding),
+        attach: (subscriber) =>
+          Effect.map(
+            cells.sendCommitBuilds(key, CommitBuilds.CommitBuildsEvent.Attached({ subscriber })),
+            commitBuildsStanding,
+          ),
+        detach: (task) =>
+          Effect.map(cells.sendCommitBuilds(key, CommitBuilds.CommitBuildsEvent.Detached({ task })), commitBuildsStanding),
+      }),
     })
   }
 
@@ -274,6 +296,7 @@ export const make = Effect.gen(function* () {
    */
   const apply = (observed: ResourceFacts): Effect.Effect<Applied, Failure> => {
     const key = keyOf(subjectOf(observed))
+    const label = labelOf(subjectOf(observed))
 
     return ResourceFacts.match(observed, {
       PullRequest: ({ facts }) =>
@@ -281,12 +304,13 @@ export const make = Effect.gen(function* () {
           const before = yield* cells.pullRequest(key)
 
           if (PullRequest.repeats(before, facts)) {
-            return { standing: pullRequestStanding(before), version: "", notices: [] }
+            return { label, standing: pullRequestStanding(before), version: "", notices: [] }
           }
 
           const after = yield* cells.sendPullRequest(key, PullRequest.PullRequestEvent.Observed({ facts }))
 
           return {
+            label,
             standing: pullRequestStanding(after),
             version: facts.head.slice(0, 12),
             notices: PullRequest.changes(before, after).map((change) => ({
@@ -301,12 +325,13 @@ export const make = Effect.gen(function* () {
           const before = yield* cells.linearIssue(key)
 
           if (LinearIssue.repeats(before, facts)) {
-            return { standing: linearIssueStanding(before), version: "", notices: [] }
+            return { label, standing: linearIssueStanding(before), version: "", notices: [] }
           }
 
           const after = yield* cells.sendLinearIssue(key, LinearIssue.LinearIssueEvent.Observed({ facts }))
 
           return {
+            label,
             standing: linearIssueStanding(after),
             version: "",
             notices: LinearIssue.changes(before, after).map((change) => ({
@@ -320,17 +345,44 @@ export const make = Effect.gen(function* () {
         Effect.gen(function* () {
           const before = yield* cells.incident(key)
 
-          if (Incident.repeats(before, facts)) return { standing: incidentStanding(before), version: "", notices: [] }
+          if (Incident.repeats(before, facts)) {
+            return { label, standing: incidentStanding(before), version: "", notices: [] }
+          }
 
           const after = yield* cells.sendIncident(key, Incident.IncidentEvent.Observed({ facts }))
 
           return {
+            label,
             standing: incidentStanding(after),
             version: "",
             notices: Incident.changes(before, after).map((change) => ({
               tag: change._tag,
               text: Incident.describe(change),
               wakes: (relation: Relation) => Incident.wakes(relation, change),
+            })),
+          }
+        }),
+      CommitBuilds: ({ facts }) =>
+        Effect.gen(function* () {
+          const before = yield* cells.commitBuilds(key)
+          const at = yield* Clock.currentTimeMillis
+          // A commit's hash says nothing to a session, so the wake-up also names what the commit is.
+          const named = facts.title === "" ? label : `${label}, "${facts.title}",`
+
+          if (CommitBuilds.repeats(before, facts, at)) {
+            return { label: named, standing: commitBuildsStanding(before), version: "", notices: [] }
+          }
+
+          const after = yield* cells.sendCommitBuilds(key, CommitBuilds.CommitBuildsEvent.Observed({ facts, at }))
+
+          return {
+            label: named,
+            standing: commitBuildsStanding(after),
+            version: "",
+            notices: CommitBuilds.changes(before, after).map((change) => ({
+              tag: change._tag,
+              text: CommitBuilds.describe(change),
+              wakes: (relation: Relation) => CommitBuilds.wakes(relation, change),
             })),
           }
         }),
@@ -389,7 +441,7 @@ export const make = Effect.gen(function* () {
   const observe = Effect.fn("Resources.observe")(function* (observed: ResourceFacts) {
     const ref = subjectOf(observed)
     const key = keyOf(ref)
-    const { standing, notices, version } = yield* apply(observed)
+    const { label, standing, notices, version } = yield* apply(observed)
     const now = yield* Clock.currentTimeMillis
 
     // Every follower learns that it ended, whether or not its session is woken.
@@ -415,7 +467,7 @@ export const make = Effect.gen(function* () {
           // One batch of changes has one ID, so the same observation never wakes a session twice.
           id: `${key}@${version === "" ? now : version}:${relevant.map((notice) => notice.tag).join("+")}`,
           session: subscriber.session,
-          text: wakeText(ref, relevant, { title: task.title, current }),
+          text: wakeText(label, relevant, { title: task.title, current }),
           at: now,
         }),
       )

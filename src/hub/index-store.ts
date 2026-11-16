@@ -2,6 +2,7 @@ import { Clock, Context, Effect, Layer, Ref, Schema } from "effect"
 import { causeText } from "../failure.ts"
 import { TaskId } from "../protocol/ids.ts"
 import { type Outcome, ResourceKey } from "../protocol/resource.ts"
+import * as CommitBuilds from "./commit-builds.ts"
 import * as Incident from "./incident.ts"
 import * as LinearIssue from "./linear-issue.ts"
 import { PullRequestState, failedChecks, outcomeOf } from "./pull-request.ts"
@@ -101,7 +102,7 @@ type ResourceDetail = typeof ResourceDetail.Type
 const ResourceDetailJson = Schema.fromJsonString(ResourceDetail)
 
 /** The kinds of resource the board lists. */
-export const ResourceKind = Schema.Literals(["pull_request", "linear_issue", "incident"])
+export const ResourceKind = Schema.Literals(["pull_request", "linear_issue", "incident", "commit_builds"])
 
 export type ResourceKind = typeof ResourceKind.Type
 
@@ -127,6 +128,8 @@ export interface Interface {
   readonly putLinearIssue: (key: ResourceKey, state: LinearIssue.LinearIssueState) => Effect.Effect<void, IndexError>
   /** Writes an incident's row, under the same rule. */
   readonly putIncident: (key: ResourceKey, state: Incident.IncidentState) => Effect.Effect<void, IndexError>
+  /** Writes the row of a commit's builds, under the same rule. `failed` lists the pipelines whose build failed. */
+  readonly putCommitBuilds: (key: ResourceKey, state: CommitBuilds.CommitBuildsState) => Effect.Effect<void, IndexError>
   /** Every task as a forest. A task whose parent is missing from the index is a root. */
   readonly tree: Effect.Effect<ReadonlyArray<TaskNode>, IndexError>
   /** The resources, the latest change first. `watched` keeps those someone follows that can still change. */
@@ -294,6 +297,20 @@ export const make = (database: Database): Effect.Effect<Interface> =>
         }),
       })
 
+    const putCommitBuilds = (key: ResourceKey, state: CommitBuilds.CommitBuildsState) =>
+      putResource(key, {
+        kind: "commit_builds",
+        state: CommitBuilds.summaryOf(state),
+        subscribers: state.subscribers,
+        outcome: CommitBuilds.outcomeOf(state),
+        detail: { failed: CommitBuilds.failedPipelines(state) },
+        ...CommitBuilds.CommitBuildsState.$match<Pick<Entry, "title" | "seen">>(state, {
+          Unseen: () => ({ title: "", seen: false }),
+          Building: ({ title }) => ({ title, seen: true }),
+          Settled: ({ title }) => ({ title, seen: true }),
+        }),
+      })
+
     const tree = run("tree", () =>
       database.all("SELECT id, parent, title, state, detail FROM task ORDER BY updated_at DESC"),
     ).pipe(
@@ -351,6 +368,7 @@ export const make = (database: Database): Effect.Effect<Interface> =>
       putPullRequest,
       putLinearIssue,
       putIncident,
+      putCommitBuilds,
       tree,
       resources,
       tasksWithUndelivered,

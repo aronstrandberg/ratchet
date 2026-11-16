@@ -4,15 +4,17 @@
 //   bun scripts/fake-outside.ts [port]
 //
 // It serves the part of OpenCode's API that the gateway uses, with two sessions to start with, and keeps what
-// the gateway does to them. It also answers for Linear's MCP server, under /linear/mcp, and for incident.io's,
-// under /incident/mcp, behind a sign-in that it approves without asking. These routes of its own drive and
-// inspect it:
+// the gateway does to them. It also answers for the MCP servers of Linear, under /linear/mcp, of incident.io,
+// under /incident/mcp, and of Buildkite, under /buildkite/mcp, behind a sign-in that it approves without
+// asking. These routes of its own drive and inspect it:
 //
 //   POST /_emit     {"type": "session.execution.started", "data": {"sessionID": "ses_smokea"}}
 //   POST /_session  {"id": "ses_new", "title": "A new session"}
 //   POST /_issue    {"identifier": "DX-1", "title": "…", "state": {"name": "Done", "type": "completed"},
 //                    "assignee": null, "comments": [{"id": "c1", "author": "jifeng"}]}
 //   POST /_incident {"number": 7, "name": "…", "status": {"name": "Closed", "category": "closed"}, "severity": "Major"}
+//   POST /_build    {"commit": "<40 hex>", "pipeline": "bazel", "number": 1, "state": "failed",
+//                    "failedJobs": ["test"]}   optional: "branch" (main), "source" (webhook), "message"
 //   POST /_expire   withdraws every access token, so that the gateway has to renew
 //   POST /_revoke   ends every sign-in, so that someone has to sign in again
 //   GET  /_state    the sessions, and the messages and prompts they were sent
@@ -55,6 +57,22 @@ const Incident = Schema.Struct({
   status: Schema.Struct({ name: Schema.String, category: Schema.String }),
   severity: Schema.NullOr(Schema.String),
 })
+
+const Build = Schema.Struct({
+  commit: Schema.String,
+  pipeline: Schema.String,
+  number: Schema.Number,
+  state: Schema.String,
+  branch: Schema.optional(Schema.String),
+  /** What started the build: `webhook` for a push, `trigger_job` for another build, `schedule`. */
+  source: Schema.optional(Schema.String),
+  message: Schema.optional(Schema.String),
+  failedJobs: Schema.optional(Schema.Array(Schema.String)),
+})
+
+/** The builds, by pipeline and number, each with when it was first put here. */
+const builds = new Map<string, typeof Build.Type & { readonly createdAt: string }>()
+const readBuild = Schema.decodeUnknownPromise(Build)
 
 const issues = new Map<string, typeof Issue.Type>()
 const incidents = new Map<number, typeof Incident.Type>()
@@ -133,6 +151,39 @@ const linear = FakeMcp.make(
   { streamed: true },
 )
 
+const buildOf = (input: Readonly<Record<string, Schema.Json>>) =>
+  builds.get(`${String(input["pipeline_slug"])}/${String(input["build_number"])}`)
+
+const buildkite = FakeMcp.make(
+  {
+    list_builds: (input) => ({
+      value: {
+        items: [...builds.values()].flatMap((build) =>
+          build.commit === input["commit"]
+            ? [
+                {
+                  id: `${build.pipeline}-${build.number}`,
+                  branch: build.branch ?? "main",
+                  commit: build.commit,
+                  state: build.state,
+                  number: build.number,
+                  message: build.message ?? "A change (#1)",
+                  created_at: build.createdAt,
+                  web_url: `https://buildkite.com/scratch/${build.pipeline}/builds/${build.number}`,
+                },
+              ]
+            : [],
+        ),
+      },
+    }),
+    get_build: (input) => ({ value: { source: buildOf(input)?.source ?? "webhook" } }),
+    list_jobs: (input) => ({
+      value: { items: (buildOf(input)?.failedJobs ?? []).map((name) => ({ name, step_key: name, state: "failed" })) },
+    }),
+  },
+  { streamed: false },
+)
+
 const incidentIo = FakeMcp.make(
   {
     incident_show: (input) => {
@@ -181,10 +232,20 @@ Bun.serve({
 
     if (signedIn !== null) return signedIn
 
-    if (url.pathname === "/linear/mcp" || url.pathname === "/incident/mcp") {
+    const system = { "/linear/mcp": linear, "/incident/mcp": incidentIo, "/buildkite/mcp": buildkite }[url.pathname]
+
+    if (system !== undefined) {
       if (!signIn.accepts(request) || request.method !== "POST") return signIn.refusal(url.pathname)
 
-      return url.pathname === "/linear/mcp" ? linear.fetch(request) : incidentIo.fetch(request)
+      return system.fetch(request)
+    }
+
+    if (url.pathname === "/_build") {
+      const build = await readBuild(await request.json())
+      const key = `${build.pipeline}/${build.number}`
+      builds.set(key, { ...build, createdAt: builds.get(key)?.createdAt ?? new Date().toISOString() })
+
+      return Response.json({ builds: builds.size })
     }
 
     if (url.pathname === "/_expire") {

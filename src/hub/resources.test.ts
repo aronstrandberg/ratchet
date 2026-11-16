@@ -299,3 +299,52 @@ test("a task that waits on an incident hears only its end, and the board lists t
       expect((yield* outside.wakes)[0]?.text).toContain("Ratchet: incident INC-7 changed.\n- It is over: Closed.")
     }),
   ))
+
+const commit = "ab12".repeat(10)
+const buildsRef = ResourceRef.cases.CommitBuilds.make({ commit })
+
+/** The builds of the commit, created `minutesAgo`: one in `bazel` in the state given, and one that passed. */
+const builds = (state: string, minutesAgo = 1, failedJobs: ReadonlyArray<string> = []): ResourceFacts =>
+  ResourceFacts.cases.CommitBuilds.make({
+    facts: {
+      ref: { commit },
+      title: "Speed up the build (#12)",
+      builds: ["bazel", "deploy"].map((pipeline) => ({
+        id: `${pipeline}-1`,
+        pipeline,
+        number: 1,
+        state: pipeline === "bazel" ? state : "passed",
+        url: `https://buildkite.com/lovable/${pipeline}/builds/1`,
+        createdAt: Date.now() - minutesAgo * 60_000,
+        failedJobs: pipeline === "bazel" ? failedJobs : [],
+      })),
+    },
+  })
+
+test("the owner of a commit's builds is woken when one fails, told what the commit is, and not woken when they settle", () =>
+  run(
+    Effect.gen(function* () {
+      const { pullRequests: resources, outside } = yield* setUp("Speed up the build", builds("running"))
+      yield* resources.register(session, buildsRef, "owns")
+      expect((yield* resources.list(session)).resources).toMatchObject([
+        { label: "the builds of commit ab12ab12a", state: "1 running, 1 passed", ended: null },
+      ])
+
+      const failed = yield* resources.observe(builds("failed", 1, ["test"]))
+      expect(failed).toEqual({ changes: ["BuildFailed"], woke: 1 })
+      expect((yield* outside.wakes)[0]?.text).toContain(
+        'Ratchet: the builds of commit ab12ab12a, "Speed up the build (#12)", changed.\n- Build bazel #1 failed in test: https://buildkite.com/lovable/bazel/builds/1',
+      )
+
+      const rows = yield* Effect.flatMap(Index.Service, (index) => index.resources("all"))
+      expect(rows).toMatchObject([
+        { kind: "commit_builds", state: "1 failed, 1 passed", title: "Speed up the build (#12)", detail: { failed: ["bazel"] } },
+      ])
+
+      // The same builds, read when the newest is a quarter of an hour old.
+      const settled = yield* resources.observe(builds("failed", 16, ["test"]))
+      expect(settled).toEqual({ changes: ["Settled"], woke: 0 })
+      expect((yield* resources.list(session)).resources).toMatchObject([{ ended: "completed" }])
+      expect(yield* resources.watched).toEqual([])
+    }),
+  ))

@@ -25,8 +25,13 @@ or `Idle`. It is derived, never set. _Avoid_: Status
 ### Following
 
 **Resource**: Something outside OpenCode that a task follows: a pull request, a
-Linear issue or an incident. _Avoid_: Attachment (that is the link, not the
-thing)
+Linear issue, an incident or the builds of a commit. _Avoid_: Attachment (that
+is the link, not the thing)
+
+**Builds of a commit**: The CI builds that a commit's arrival on its branch
+started, and the builds those started. A build on a schedule and the merge
+queue's build before the merge are not among them. They are settled once every
+build has been over for a while. _Avoid_: Pipeline, CI run
 
 **Ticket**: The Linear issue a task owns. One task at most owns an issue.
 

@@ -161,7 +161,7 @@ const PrSetStatus = Tool.make("pr_set_status", {
 
 const PrList = Tool.make("pr_list", {
   description:
-    "List the pull requests, Linear issues and incidents the tasks of this session follow, on its current task and on tasks it worked on before: the task, the relation, the last reported work status, and where each stands in its own system. A pull request also shows what GitHub last said (CI, review decision, conflict, merge queue, open threads).",
+    "List the pull requests, Linear issues, incidents and builds the tasks of this session follow, on its current task and on tasks it worked on before: the task, the relation, the last reported work status, and where each stands in its own system. A pull request also shows what GitHub last said (CI, review decision, conflict, merge queue, open threads). The builds of a commit show how many are in each state.",
   parameters: Tool.EmptyParams,
   success: Resources.Following,
   failure: Failure,

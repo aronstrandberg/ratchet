@@ -2,6 +2,7 @@ import { Layer, ManagedRuntime, Result } from "effect"
 import * as Config from "../config.ts"
 import type { Env } from "../env.ts"
 import * as Telemetry from "../telemetry.ts"
+import * as Buildkite from "./buildkite.ts"
 import * as GitHub from "./github.ts"
 import * as HubBinding from "./hub-binding.ts"
 import * as IncidentIo from "./incident-io.ts"
@@ -9,13 +10,18 @@ import * as Linear from "./linear.ts"
 import * as OpenCode from "./opencode.ts"
 import * as SignIns from "./sign-ins.ts"
 
-/** The gateway: its connections to OpenCode, GitHub, Linear and incident.io, its sign-ins, and its line to the hub. */
+/** The gateway: its connections to OpenCode, GitHub, Linear, incident.io and Buildkite, its sign-ins, and its line to the hub. */
 const layer = (env: Env, config: Config.Gateway) =>
   Layer.mergeAll(
     OpenCode.layer(config.opencode),
     GitHub.layer(config.github),
     Linear.layer({ url: config.signIns.linear.resource }),
     IncidentIo.layer({ url: config.signIns["incident-io"].resource }),
+    Buildkite.layer({
+      url: config.signIns.buildkite.resource,
+      organization: config.buildkite.organization,
+      settle: "5 seconds",
+    }),
     HubBinding.layer(env.HUB),
   )
     .pipe(Layer.provideMerge(SignIns.layer(env.SIGN_IN, config.signIns)))

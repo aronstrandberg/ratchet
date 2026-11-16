@@ -23,6 +23,10 @@ export interface Settings {
   readonly LINEAR_MCP_URL?: string
   /** Where incident.io's MCP server is. Only a scratch Ratchet sets it, to a stand-in. */
   readonly INCIDENT_IO_MCP_URL?: string
+  /** Where Buildkite's MCP server is. Only a scratch Ratchet sets it, to a stand-in. */
+  readonly BUILDKITE_MCP_URL?: string
+  /** The Buildkite organization whose builds the gateway reads. */
+  readonly BUILDKITE_ORGANIZATION?: string
   readonly WAKE_SESSIONS?: string
   readonly OTLP_URL?: string
 }
@@ -45,6 +49,7 @@ export interface Gateway {
    * For Linear and incident.io the address is their MCP server, which is also where the gateway reads them.
    */
   readonly signIns: Readonly<Record<System, Target>>
+  readonly buildkite: { readonly organization: string }
   readonly tracing: Tracing
 }
 
@@ -88,7 +93,13 @@ export const gateway = (settings: Settings): Result.Result<Gateway, InvalidConfi
           resource: Option.getOrElse(optional(settings.INCIDENT_IO_MCP_URL), () => "https://mcp.incident.io/mcp"),
           scope: null,
         },
+        // Reading is all the gateway does in Buildkite.
+        buildkite: {
+          resource: Option.getOrElse(optional(settings.BUILDKITE_MCP_URL), () => "https://mcp.buildkite.com/mcp"),
+          scope: "read",
+        },
       },
+      buildkite: { organization: Option.getOrElse(optional(settings.BUILDKITE_ORGANIZATION), () => "lovable") },
       tracing: tracing(settings),
     }
   })
