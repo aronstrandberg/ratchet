@@ -139,8 +139,8 @@ export interface Interface {
    * Applies a fresh observation of a resource, queues a wake-up for each session it concerns, and delivers
    * those wake-ups.
    *
-   * A pull request that merged while it was followed has the builds of its merge commit followed from then
-   * on, by the tasks that own it.
+   * A pull request that merged while it was followed has the builds and the infrastructure runs of its merge
+   * commit followed from then on, by the tasks that own it.
    */
   readonly observe: (observed: ResourceFacts) => Effect.Effect<Observed, Failure>
   /** Tries again to deliver every wake-up that has not reached its session, and returns how many did. */
@@ -186,8 +186,8 @@ interface Applied {
   readonly notices: ReadonlyArray<Notice>
   /** What tells one batch of changes from the next: a pull request's head, and nothing for other kinds. */
   readonly version: string
-  /** A resource the tasks that own this one follow from now on, because of what changed. */
-  readonly next?: ResourceRef
+  /** The resources the tasks that own this one follow from now on, because of what changed. Most changes add none. */
+  readonly follows?: ReadonlyArray<ResourceRef>
 }
 
 const githubView = (state: PullRequest.PullRequestState): GitHubView =>
@@ -341,11 +341,16 @@ export const make = Effect.gen(function* () {
             })),
           }
 
-          // A merge starts builds on the base branch that carry the commit, and nothing else tells the
-          // session that merged it when one of them fails.
-          return facts.mergeCommit !== null && PullRequest.mergedWhileFollowed(before, after)
-            ? { ...applied, next: ResourceRef.cases.CommitBuilds.make({ owner: facts.ref.owner, repo: facts.ref.repo, commit: facts.mergeCommit }) }
-            : applied
+          if (facts.mergeCommit === null || !PullRequest.mergedWhileFollowed(before, after)) return applied
+
+          // A merge starts builds on the base branch and runs of the stacks the change touches. Nothing
+          // else tells the session that merged it when a build fails or a run waits for someone.
+          const merged = { owner: facts.ref.owner, repo: facts.ref.repo, commit: facts.mergeCommit }
+
+          return {
+            ...applied,
+            follows: [ResourceRef.cases.CommitBuilds.make(merged), ResourceRef.cases.CommitRuns.make(merged)],
+          }
         }),
       LinearIssue: ({ facts }) =>
         Effect.gen(function* () {
@@ -491,7 +496,7 @@ export const make = Effect.gen(function* () {
   /** Applies an observation and tells the tasks it concerns. */
   const settle = Effect.fn("Resources.settle")(function* (observed: ResourceFacts) {
     const key = keyOf(subjectOf(observed))
-    const { label, standing, notices, version, next } = yield* apply(observed)
+    const { label, standing, notices, version, follows } = yield* apply(observed)
     const now = yield* Clock.currentTimeMillis
 
     // Every follower learns that it ended, whether or not its session is woken.
@@ -524,7 +529,7 @@ export const make = Effect.gen(function* () {
       woke += yield* deliver(subscriber.task)
     }
 
-    return { changes: notices.map((notice) => notice.tag), woke, owners: standing.subscribers.filter(owns), next }
+    return { changes: notices.map((notice) => notice.tag), woke, owners: standing.subscribers.filter(owns), follows }
   })
 
   /**
@@ -556,12 +561,12 @@ export const make = Effect.gen(function* () {
   })
 
   const observe = Effect.fn("Resources.observe")(function* (observed: ResourceFacts) {
-    const { changes, woke, owners, next } = yield* settle(observed)
+    const { changes, woke, owners, follows } = yield* settle(observed)
 
-    if (next !== undefined) {
+    for (const next of follows ?? []) {
       for (const owner of owners) {
         // What cannot be followed is not a reason to lose the observation that led to it. A commit that
-        // started no build is the usual case: its repository has no CI.
+        // nothing carries is the usual case: its repository has no CI, or no stack planned its change.
         yield* follow(owner, next).pipe(
           Effect.catch((failure) => Effect.logInfo(`${labelOf(next)} is not followed for ${owner.task}: ${failure.message}`)),
         )
