@@ -3,6 +3,7 @@ import { Sse } from "effect/encoding"
 import { HttpClient, HttpClientRequest, type HttpClientResponse } from "effect/http"
 import { causeText } from "../failure.ts"
 import * as SignIns from "./sign-ins.ts"
+import { traceOperation } from "./traced-operation.ts"
 import type { System } from "./systems.ts"
 
 /** A tool ran and answered that it failed. `problem` is the tool's own word for why. */
@@ -174,8 +175,19 @@ export const make = (config: Config): Effect.Effect<Interface, never, HttpClient
       Semaphore.withPermits(opening, 1),
     )
 
-    const call: Interface["call"] = (tool, input, answer) =>
-      Effect.gen(function* () {
+    const tracedCall = <A, E extends { readonly _tag: string }, R>(
+      tool: string,
+      effect: Effect.Effect<A, E, R>,
+    ): Effect.Effect<A, E, R> =>
+      traceOperation(effect, {
+        spanName: "McpClient.call",
+        operation: tool,
+        errorTagAttribute: "mcp.error_tag",
+        attributes: { "mcp.system": config.system, "mcp.tool": tool },
+      })
+
+    const call: Interface["call"] = (tool, input, answer) => {
+      const called = Effect.gen(function* () {
         const message = { id: 1, method: "tools/call", params: { name: tool, arguments: input } }
         const first = yield* send(tool, Option.some(yield* opened), message)
         // A server that no longer knows the session answers 404. A new session is opened, once.
@@ -195,7 +207,10 @@ export const make = (config: Config): Effect.Effect<Interface, never, HttpClient
             : Schema.decodeUnknownEffect(answer)(result.structuredContent)
 
         return yield* Effect.mapError(parsed, unavailable(tool))
-      }).pipe(Effect.withSpan("McpClient.call", { attributes: { "mcp.system": config.system, "mcp.tool": tool } }))
+      })
+
+      return tracedCall(tool, called)
+    }
 
     return { call }
   })

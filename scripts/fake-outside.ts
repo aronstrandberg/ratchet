@@ -16,6 +16,7 @@
 //   POST /_incident {"number": 7, "name": "…", "status": {"name": "Closed", "category": "closed"}, "severity": "Major"}
 //   POST /_build    {"commit": "<40 hex>", "pipeline": "bazel", "number": 1, "state": "failed",
 //                    "failedJobs": ["test"]}   optional: "branch" (main), "source" (webhook), "message"
+//                    and ISO "startedAt" and "finishedAt" timestamps
 //                   GitHub is the real one, so the commit is a merge commit there, or one that followed it.
 //   POST /_run      {"id": "r1", "stack": "iam", "commit": "<40 hex>", "type": "TRACKED", "state": "UNCONFIRMED"}
 //                   optional: "needsApproval", "delta". A PROPOSED run of a commit of the pull request names a
@@ -70,12 +71,14 @@ const Incident = Schema.Struct({
 const Build = Schema.Struct({
   commit: Schema.String,
   pipeline: Schema.String,
-  number: Schema.Number,
+  number: Schema.Int.pipe(Schema.check(Schema.isGreaterThan(0))),
   state: Schema.String,
   branch: Schema.optional(Schema.String),
   /** What started the build: `webhook` for a push, `trigger_job` for another build, `schedule`. */
   source: Schema.optional(Schema.String),
   message: Schema.optional(Schema.String),
+  startedAt: Schema.optional(Schema.NullOr(Schema.DateFromString)),
+  finishedAt: Schema.optional(Schema.NullOr(Schema.DateFromString)),
   failedJobs: Schema.optional(Schema.Array(Schema.String)),
 })
 
@@ -193,7 +196,27 @@ const buildkite = FakeMcp.make(
         ),
       },
     }),
-    get_build: (input) => ({ value: { source: buildOf(input)?.source ?? "webhook" } }),
+    get_build: (input) => {
+      const build = buildOf(input)
+
+      if (build === undefined) return { problem: "Build not found" }
+
+      return {
+        value: {
+          id: `${build.pipeline}-${build.number}`,
+          number: build.number,
+          state: build.state,
+          branch: build.branch ?? "main",
+          commit: build.commit,
+          message: build.message ?? null,
+          web_url: `https://buildkite.com/scratch/${build.pipeline}/builds/${build.number}`,
+          created_at: build.createdAt,
+          started_at: build.startedAt?.toISOString() ?? null,
+          finished_at: build.finishedAt?.toISOString() ?? null,
+          source: build.source ?? "webhook",
+        },
+      }
+    },
     list_jobs: (input) => ({
       value: { items: (buildOf(input)?.failedJobs ?? []).map((name) => ({ name, step_key: name, state: "failed" })) },
     }),

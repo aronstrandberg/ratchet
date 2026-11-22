@@ -1,5 +1,6 @@
 import type { Env } from "./env.ts"
 import * as Mcp from "./hub/mcp.ts"
+import { buildRoute } from "./gateway/build-route.ts"
 
 export {
   ClusterDurableQueue,
@@ -30,6 +31,8 @@ const route = async (request: Request, env: Env): Promise<Response> => {
       return Response.json(await env.HUB.resources())
     case "/prs":
       return Response.json((await env.HUB.resources()).filter((row) => row.kind === "pull_request"))
+    case "/builds":
+      return buildRoute(request, env.GATEWAY)
     case "/gateway/opencode":
       return Response.json(await env.GATEWAY.watchOpenCode())
     case "/gateway/webhooks":

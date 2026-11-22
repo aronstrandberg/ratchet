@@ -50,6 +50,7 @@ followed.
 | `GET /tree` | Returns the task forest |
 | `GET /resources` | Returns the pull requests, Linear issues and incidents tasks follow |
 | `GET /prs` | Returns the pull requests alone |
+| `GET /builds?url=<address>` | Returns one Buildkite build. The address is `https://buildkite.com/<organization>/<pipeline>/builds/<number>` and must name `BUILDKITE_ORGANIZATION` |
 | `POST /mcp` | The tools sessions call |
 | `GET /gateway/sign-ins` | Says where Ratchet's sign-in to each system stands: `signed-out`, `pending` or `signed-in` |
 | `GET /gateway/sign-ins/<system>/login` | Starts a sign-in to `webhook-proxy`, `linear`, `incident-io`, `buildkite` or `spacelift`, and returns the address to open in a browser |

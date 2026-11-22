@@ -43,6 +43,7 @@ const reading = (branch: ReadonlyArray<string>, builds: { current: ReadonlyArray
         }),
       scheduled: (held) => Effect.succeed(held.id.includes("scheduled")),
       failedJobs: (held) => Effect.succeed(held.state === "failed" ? ["test"] : []),
+      read: (ref) => Effect.fail(new Buildkite.BuildNotFound({ ref })),
     }),
   )
 
