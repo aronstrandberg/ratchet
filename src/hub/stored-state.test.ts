@@ -48,6 +48,19 @@ test("a wake-up queued before wake-ups carried their time still loads, from a sn
   expect(storedTaskEvent('{"_tag":"WakeQueued","id":"w1","session":"ses_1","text":"It merged."}')).toMatchObject({ at: 0 })
 })
 
+test("a wake-up queued before wake-ups could carry a card still loads, as one that starts a turn", () => {
+  const state = storedTask(
+    '{"_tag":"Idle","title":"t","parent":null,"sessions":["ses_1"],"running":[],"subagents":[],"questions":[],' +
+      '"attachments":[],"outbox":[{"id":"w1","session":"ses_1","text":"It merged.","queuedAt":5}]}',
+  )
+
+  expect(isUnborn(state) ? [] : state.outbox.map(({ card, resume }) => ({ card, resume }))).toEqual([{ card: null, resume: true }])
+  expect(storedTaskEvent('{"_tag":"WakeQueued","id":"w1","session":"ses_1","text":"It merged.","at":5}')).toMatchObject({
+    card: null,
+    resume: true,
+  })
+})
+
 const storedPullRequestEvent = Schema.decodeUnknownSync(
   Schema.fromJsonString(Schema.toCodecJson(pullRequestMachine.eventSchema)),
 )

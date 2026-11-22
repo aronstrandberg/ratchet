@@ -56,7 +56,7 @@ test("a reversible decision leaves the task as it was, and confirming the recomm
       expect((yield* tasks.current(session)).state).toBe("Idle")
       expect((yield* index.inbox).defaulted.map((row) => row.id)).toEqual([raised.decision])
 
-      yield* decisions.answer(raised.decision, Answer.cases.Chose.make({ option: "ci-amd64" }), "")
+      yield* decisions.answer(raised.decision, Answer.cases.Chose.make({ option: "ci-amd64" }), "", "inbox")
 
       expect(yield* outside.wakes).toEqual([])
       expect((yield* tasks.current(session)).decisions).toEqual([])
@@ -75,8 +75,8 @@ test("a decision the session waits on puts the task on me, and my answer wakes t
         [raised.decision, "Grow the worker pools"],
       ])
 
-      yield* decisions.answer(raised.decision, Answer.cases.Chose.make({ option: "golink" }), "Links first.")
-      const again = yield* Effect.flip(decisions.answer(raised.decision, Answer.cases.Chose.make({ option: "golink" }), ""))
+      yield* decisions.answer(raised.decision, Answer.cases.Chose.make({ option: "golink" }), "Links first.", "inbox")
+      const again = yield* Effect.flip(decisions.answer(raised.decision, Answer.cases.Chose.make({ option: "golink" }), "", "inbox"))
 
       expect(again._tag).toBe("DecisionClosed")
       expect((yield* tasks.current(session)).state).toBe("Idle")
@@ -101,7 +101,7 @@ test("a spec whose recommendation is not an option is refused, and so is an answ
       expect(refused._tag).toBe("InvalidDecision")
 
       const raised = yield* decisions.raise(session, waits, Option.none())
-      const unknown = yield* Effect.flip(decisions.answer(raised.decision, Answer.cases.Chose.make({ option: "arm64" }), ""))
+      const unknown = yield* Effect.flip(decisions.answer(raised.decision, Answer.cases.Chose.make({ option: "arm64" }), "", "inbox"))
 
       expect(unknown._tag).toBe("UnknownOption")
       expect((yield* index.inbox).waiting.map((row) => row.id)).toEqual([raised.decision])
@@ -127,5 +127,42 @@ test("a new decision supersedes an open one, and the session closes a decision t
         [second.decision, "Answered"],
         [first.decision, "Superseded"],
       ])
+    }),
+  ))
+
+test("the coordinator hears of a decision without a turn, and its answer wakes the session that asked", () =>
+  run(
+    Effect.gen(function* () {
+      const { tasks, decisions, outside } = yield* setUp
+      const coordinator = SessionId.make("ses_c")
+
+      yield* tasks.observe([
+        SessionFact.cases.Opened.make({
+          session: coordinator,
+          title: "Inbox",
+          origin: SessionOrigin.cases.Root.make({}),
+          running: false,
+          subagents: [],
+          questions: [],
+        }),
+      ])
+      yield* decisions.seat(coordinator)
+      const raised = yield* decisions.raise(session, waits, Option.none())
+      const chose = Answer.cases.Chose.make({ option: "golink" })
+
+      expect((yield* Effect.flip(decisions.answerAsCoordinator(session, raised.decision, chose, "")))._tag).toBe(
+        "NotCoordinator",
+      )
+
+      yield* decisions.answerAsCoordinator(coordinator, raised.decision, chose, "")
+      const wakes = yield* outside.wakes
+
+      expect(wakes.map((wake) => [wake.session, wake.id, wake.resume, wake.card === null ? null : (wake.card.ending?._tag ?? "open")])).toEqual([
+        [coordinator, `${raised.decision}:opened`, false, "open"],
+        [coordinator, `${raised.decision}:closed`, false, "Answered"],
+        [session, `${raised.decision}:answer`, true, null],
+      ])
+      expect(wakes[0]?.text).toContain("[The queue](https://example.com/q) waits 9 minutes.")
+      expect(wakes[0]?.text).toContain("1. **ci-amd64** (recommended): Shorter queues at the peak.")
     }),
   ))

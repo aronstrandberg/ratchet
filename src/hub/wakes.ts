@@ -1,4 +1,5 @@
 import { Clock, Context, Effect, Layer, Result } from "effect"
+import type { Card } from "../protocol/card.ts"
 import type { SessionId, TaskId } from "../protocol/ids.ts"
 import * as Cells from "./cells.ts"
 import * as Index from "./index-store.ts"
@@ -15,6 +16,10 @@ export interface Message {
   readonly id: string
   readonly session: SessionId
   readonly text: string
+  /** What the message is about, for a client that draws it as a card. */
+  readonly card?: Card
+  /** Whether the message starts a turn. It does unless this says otherwise. */
+  readonly resume?: boolean
 }
 
 type Failure = Cells.CellUnavailable | Index.IndexError
@@ -61,7 +66,17 @@ export const make = Effect.gen(function* () {
   const send = Effect.fn("Wakes.send")(function* (task: TaskId, message: Message) {
     if (!WakePolicy.allows(policy, message.session)) return 0
     const at = yield* Clock.currentTimeMillis
-    yield* cells.sendTask(task, TaskEvent.WakeQueued({ ...message, at }))
+    yield* cells.sendTask(
+      task,
+      TaskEvent.WakeQueued({
+        id: message.id,
+        session: message.session,
+        text: message.text,
+        at,
+        card: message.card ?? null,
+        resume: message.resume ?? true,
+      }),
+    )
 
     return yield* deliver(task)
   })

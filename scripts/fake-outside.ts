@@ -50,7 +50,13 @@ const Patch = Schema.Struct({
   metadata: Schema.optional(Schema.Record(Schema.String, Schema.Json)),
 })
 
-const Message = Schema.Struct({ id: Schema.optional(Schema.String), text: Schema.String })
+const Message = Schema.Struct({
+  id: Schema.optional(Schema.String),
+  text: Schema.String,
+  metadata: Schema.optional(Schema.Json),
+  resume: Schema.optional(Schema.NullOr(Schema.Boolean)),
+})
+
 const Emitted = Schema.Struct({ type: Schema.String, data: Schema.Record(Schema.String, Schema.Json) })
 
 const Issue = Schema.Struct({
@@ -105,7 +111,16 @@ const readMessage = Schema.decodeUnknownPromise(Message)
 const readEmitted = Schema.decodeUnknownPromise(Emitted)
 
 const sessions = new Map<string, Session>()
-const messages: Array<{ session: string; kind: "synthetic" | "prompt"; id: string; text: string }> = []
+
+const messages: Array<{
+  session: string
+  kind: "synthetic" | "prompt"
+  id: string
+  text: string
+  metadata: Schema.Json
+  resume: boolean
+}> = []
+
 const listeners = new Set<ReadableStreamDefaultController<Uint8Array>>()
 const encoder = new TextEncoder()
 let clock = 1_000
@@ -391,7 +406,14 @@ Bun.serve({
 
       // A message whose ID the session already holds is admitted once, as OpenCode does it.
       if (!messages.some((held) => held.id === messageId)) {
-        messages.push({ session: id, kind: action, id: messageId, text: message.text })
+        messages.push({
+          session: id,
+          kind: action,
+          id: messageId,
+          text: message.text,
+          metadata: message.metadata ?? null,
+          resume: message.resume ?? true,
+        })
       }
 
       return Response.json({ data: { id: messageId } })

@@ -5,6 +5,7 @@ import type { SessionId, TaskId } from "../protocol/ids.ts"
 import type { ResourceKey } from "../protocol/resource.ts"
 import { CommitBuildsEntity, type CommitBuildsEvent, type CommitBuildsState } from "./commit-builds.ts"
 import { CommitRunsEntity, type CommitRunsEvent, type CommitRunsState } from "./commit-runs.ts"
+import { CoordinatorEntity, CoordinatorEvent, type CoordinatorState, seat } from "./coordinator.ts"
 import { DecisionEntity, type DecisionEvent, type DecisionState } from "./decision.ts"
 import { IncidentEntity, type IncidentEvent, type IncidentState } from "./incident.ts"
 import * as Index from "./index-store.ts"
@@ -70,6 +71,9 @@ export interface Interface {
     key: ResourceKey,
     event: typeof CommitRunsEvent.Type,
   ) => Effect.Effect<CommitRunsState, CellUnavailable | Index.IndexError>
+  readonly coordinator: Effect.Effect<CoordinatorState, CellUnavailable>
+  /** Makes a session the one Ratchet tells about the inbox. */
+  readonly seatCoordinator: (session: SessionId) => Effect.Effect<CoordinatorState, CellUnavailable>
   readonly decision: (id: DecisionId) => Effect.Effect<DecisionState, CellUnavailable>
   /** Sends a decision an event and writes the state it answers with to the index. */
   readonly sendDecision: (
@@ -94,6 +98,7 @@ export const make = Effect.gen(function* () {
   const commitBuilds = yield* CommitBuildsEntity.client
   const commitRuns = yield* CommitRunsEntity.client
   const decisions = yield* DecisionEntity.client
+  const coordinators = yield* CoordinatorEntity.client
 
   return Service.of({
     task: (id) => tasks(id).GetState().pipe(Effect.mapError(unavailable(`Task/${id}`))),
@@ -149,6 +154,11 @@ export const make = Effect.gen(function* () {
           Effect.mapError(unavailable(`CommitRuns/${key}`)),
           Effect.tap((state) => index.putCommitRuns(key, state)),
         ),
+    coordinator: coordinators(seat).GetState().pipe(Effect.mapError(unavailable(`Coordinator/${seat}`))),
+    seatCoordinator: (session) =>
+      coordinators(seat)
+        .Send({ event: CoordinatorEvent.Seated({ session }) })
+        .pipe(Effect.mapError(unavailable(`Coordinator/${seat}`))),
     decision: (id) => decisions(id).GetState().pipe(Effect.mapError(unavailable(`Decision/${id}`))),
     sendDecision: (id, event) =>
       decisions(id)

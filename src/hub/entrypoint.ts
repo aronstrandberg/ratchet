@@ -81,7 +81,7 @@ export class Hub extends WorkerEntrypoint<Env> {
       Effect.gen(function* () {
         const { id, answer, note } = yield* decodeAnswer(input)
 
-        yield* (yield* Decisions.Service).answer(id, answer, note)
+        yield* (yield* Decisions.Service).answer(id, answer, note, "inbox")
       }).pipe(Effect.withSpan("Hub.answer")),
     )
   }

@@ -2,6 +2,7 @@ import { Context, Effect, Layer, Option, Redacted, Schema, Stream } from "effect
 import { Sse } from "effect/encoding"
 import { FetchHttpClient, HttpClient, HttpClientRequest, HttpClientResponse } from "effect/http"
 import { causeText } from "../failure.ts"
+import { Card } from "../protocol/card.ts"
 import { SessionId, type TaskId } from "../protocol/ids.ts"
 import { type Question, SessionFact, SessionOrigin } from "../protocol/session.ts"
 import type { Wake } from "../protocol/wake.ts"
@@ -84,6 +85,8 @@ export interface Interface {
 
 /** The gateway's connection to OpenCode. */
 export class Service extends Context.Service<Service, Interface>()("@ratchet/gateway/OpenCode") {}
+
+const encodeCard = Schema.encodeSync(Card)
 
 const SessionPage = Schema.Struct({
   data: Schema.Array(SessionInfo),
@@ -412,7 +415,8 @@ export const make = (config: Config): Effect.Effect<Interface, never, HttpClient
             id,
             text: wake.text,
             description: "Ratchet notification",
-            metadata: { ratchet: { wake: wake.id } },
+            metadata: { ratchet: { wake: wake.id, card: wake.card === null ? null : encodeCard(wake.card) } },
+            resume: wake.resume,
           }),
           anyStatus.execute,
           // 409 says the session has taken this message in already, and that counts as delivered.

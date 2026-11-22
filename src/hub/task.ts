@@ -5,6 +5,7 @@ import { DecisionId } from "../protocol/decision.ts"
 import { SessionId, TaskId } from "../protocol/ids.ts"
 import { Outcome, Relation, ResourceKey, WorkStatus } from "../protocol/resource.ts"
 import { Question } from "../protocol/session.ts"
+import { Card } from "../protocol/card.ts"
 import { Wake } from "../protocol/wake.ts"
 
 /** A running subagent. `watching` marks one that monitors something and does no work on the task. */
@@ -122,6 +123,8 @@ export const TaskEvent = Event({
     text: Schema.String,
     /** When it was queued, in milliseconds since the epoch. */
     at: Schema.Number.pipe(Schema.withDecodingDefaultKey(Effect.succeed(0))),
+    card: Schema.NullOr(Card).pipe(Schema.withDecodingDefaultKey(Effect.succeed(null))),
+    resume: Schema.Boolean.pipe(Schema.withDecodingDefaultKey(Effect.succeed(true))),
   },
   WakeDelivered: { id: Schema.String },
   DecisionOpened: OpenDecision.fields,
@@ -279,7 +282,14 @@ export const taskMachine = Machine.make({
       ...detailsOf(state),
       outbox: [
         ...without(state.outbox, (w) => w.id === event.id),
-        { id: event.id, session: event.session, text: event.text, queuedAt: event.at },
+        {
+          id: event.id,
+          session: event.session,
+          text: event.text,
+          queuedAt: event.at,
+          card: event.card,
+          resume: event.resume,
+        },
       ],
     }),
   )

@@ -3,7 +3,7 @@ import { McpProtocol, McpSchema, McpServer, Tool, Toolkit } from "effect/ai"
 import { HttpRouter } from "effect/http"
 import type { Env } from "../env.ts"
 import { causeText } from "../failure.ts"
-import { Choice, DecisionId, DecisionKind, DecisionSpec } from "../protocol/decision.ts"
+import { Answer, Choice, DecisionId, DecisionKind, DecisionSpec } from "../protocol/decision.ts"
 import { SessionId } from "../protocol/ids.ts"
 import { PullRequestRef } from "../protocol/pull-request.ts"
 import { Relation, ResourceRef, parseReference } from "../protocol/resource.ts"
@@ -59,7 +59,10 @@ const instructions = `Ratchet tracks this session's work as tasks. A session wor
   task's scope or design. Keep the question tool for a turn that cannot go on without an answer and where
   you have no recommendation.
 - When the user answers a decision in this session's own window instead, or the question no longer
-  matters, call decision_close.`
+  matters, call decision_close.
+- The user may make one session the coordinator, with inbox_watch. Ratchet then posts each decision there
+  when it opens and when it closes, without starting a turn. In that session, show a decision's brief and
+  options as Ratchet wrote them, and call decision_answer only with what the user said in this turn.`
 
 const Failure = Schema.Struct({ message: Schema.String })
 
@@ -178,6 +181,43 @@ const DecisionClose = Tool.make("decision_close", {
     decision: DecisionId.annotate({ description: "The decision's ID, starting with dec_." }),
     option: Schema.optional(Schema.String).annotate({ description: "The label of the option the user chose here." }),
     reason: Schema.String.annotate({ description: "What the user said, or why the question no longer matters." }),
+  }),
+  success: Schema.Struct({ decision: DecisionId }),
+  failure: Failure,
+  failureMode: "return",
+  dependencies: [McpSchema.McpRequestContext],
+})
+
+const InboxWatch = Tool.make("inbox_watch", {
+  description:
+    "Make this session the coordinator: Ratchet posts every decision here when it opens and when it closes. Call it only when the user asks. It answers with what waits on the user now.",
+  parameters: Tool.EmptyParams,
+  success: Decisions.InboxCards,
+  failure: Failure,
+  failureMode: "return",
+  dependencies: [McpSchema.McpRequestContext],
+})
+
+const InboxList = Tool.make("inbox_list", {
+  description:
+    "List what waits on the user: decisions sessions wait on, open question forms and permission requests, and decisions whose recommended option a session acts on meanwhile.",
+  parameters: Tool.EmptyParams,
+  success: Decisions.InboxCards,
+  failure: Failure,
+  failureMode: "return",
+  dependencies: [McpSchema.McpRequestContext],
+})
+
+const DecisionAnswer = Tool.make("decision_answer", {
+  description:
+    "Answer a decision for the user, from the coordinator's session only, with what the user said in this turn. Ratchet messages the session that asked, unless the answer confirms the option it already acts on.",
+  parameters: Schema.Struct({
+    decision: DecisionId.annotate({ description: "The decision's ID, starting with dec_." }),
+    option: Schema.optional(Schema.String).annotate({ description: "The label of the option the user chose." }),
+    text: Schema.optional(Schema.String).annotate({
+      description: "The user's answer in their own words, when no option fits. Give option or text.",
+    }),
+    note: Schema.optional(Schema.String).annotate({ description: "Anything else the user said for that session." }),
   }),
   success: Schema.Struct({ decision: DecisionId }),
   failure: Failure,
@@ -309,7 +349,17 @@ const SessionTools = Toolkit.make(
   ResourceUnregister,
   DecisionRaise,
   DecisionClose,
+  DecisionAnswer,
+  InboxWatch,
+  InboxList,
 )
+
+/** decision_answer was given neither an option nor an answer in words. */
+class NoAnswer extends Schema.TaggedError<NoAnswer>()("NoAnswer", {}) {
+  override get message(): string {
+    return "Give the option the user chose, or their answer as text"
+  }
+}
 
 /** What a session gave as a resource is none of the kinds Ratchet follows. */
 class UnknownReference extends Schema.TaggedError<UnknownReference>()("UnknownReference", { given: Schema.String }) {
@@ -355,6 +405,8 @@ type ToolFailure =
   | Decisions.DecisionClosed
   | Decisions.NotADecisionOfSession
   | Decisions.UnknownOption
+  | Decisions.NotCoordinator
+  | NoAnswer
   | UnknownReference
   | ResourceNotFound
   | ResourceNotSignedIn
@@ -378,6 +430,8 @@ const explain = Match.type<ToolFailure>().pipe(
     DecisionClosed: (failure) => failure.message,
     NotADecisionOfSession: (failure) => failure.message,
     UnknownOption: (failure) => failure.message,
+    NotCoordinator: (failure) => `${failure.message}. The user makes a session the coordinator with inbox_watch.`,
+    NoAnswer: (failure) => failure.message,
     UnknownReference: (failure) =>
       `${failure.message}. Give a pull request, a Linear issue or an incident by its address or its short name, such as owner/repo#12, DX-1550 or INC-123.`,
     ResourceNotFound: (failure) => `${failure.message}. It is not registered.`,
@@ -462,6 +516,24 @@ const handlers = (env: Env) => {
         decisions((service, session) =>
           Effect.as(service.close(session, decision, Option.fromUndefinedOr(option), reason), { decision }),
         ),
+      decision_answer: ({ decision, option, text, note }) =>
+        decisions((service, session) => {
+          const given: Option.Option<Answer> =
+            option !== undefined && option.trim() !== ""
+              ? Option.some(Answer.cases.Chose.make({ option: option.trim() }))
+              : text !== undefined && text.trim() !== ""
+                ? Option.some(Answer.cases.Wrote.make({ text: text.trim() }))
+                : Option.none()
+
+          return Effect.gen(function* () {
+            if (Option.isNone(given)) return yield* new NoAnswer()
+            yield* service.answerAsCoordinator(session, decision, given.value, note ?? "")
+
+            return { decision }
+          })
+        }),
+      inbox_watch: () => decisions((service, session) => service.seat(session)),
+      inbox_list: () => decisions((service) => service.inbox),
       resource_unregister: ({ resource }) =>
         resources((service, session) => Effect.flatMap(named(resource), (ref) => service.unregister(session, ref))),
     }),
