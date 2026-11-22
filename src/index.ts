@@ -2,6 +2,7 @@ import type { Env } from "./env.ts"
 import { Result, Schema } from "effect"
 import { Answer } from "./protocol/decision.ts"
 import * as Mcp from "./hub/mcp.ts"
+import * as InboxPage from "./inbox-page.ts"
 import { buildRoute } from "./gateway/build-route.ts"
 
 export {
@@ -33,6 +34,10 @@ const decodeAnswerForm = Schema.decodeUnknownResult(AnswerForm)
 
 const route = async (request: Request, env: Env): Promise<Response> => {
   switch (new URL(request.url).pathname) {
+    case "/":
+      return new Response(InboxPage.render(await env.HUB.inbox(), Date.now()), {
+        headers: { "content-type": "text/html; charset=utf-8" },
+      })
     case "/inbox":
       return Response.json(await env.HUB.inbox())
     case "/tree":
@@ -57,7 +62,7 @@ const route = async (request: Request, env: Env): Promise<Response> => {
 }
 
 /**
- * `POST /decisions/<id>/answer`, as JSON or as a form: `option` with an option's label, or `text` with an answer
+ * `POST /decisions/<id>/answer`, as JSON or from the inbox page's form: `option` with an option's label, or `text` with an answer
  * in my own words, and `note`.
  */
 const answer = async (request: Request, env: Env): Promise<Response> => {
@@ -83,7 +88,8 @@ const answer = async (request: Request, env: Env): Promise<Response> => {
 
   await env.HUB.answer({ id, answer: Schema.encodeSync(Answer)(given), note: note.trim() })
 
-  return new Response(null, { status: 204 })
+  // The page's form wants the page again; a script wants only to know that it worked.
+  return json ? new Response(null, { status: 204 }) : Response.redirect(new URL("/", request.url).toString(), 303)
 }
 
 /** The two steps of a sign-in to one system: `/gateway/sign-ins/<system>/login` and `…/callback`. */
