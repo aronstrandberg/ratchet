@@ -15,7 +15,7 @@ const session = SessionId.make("ses_a")
 
 const spec = (kind: DecisionKind): DecisionSpec => ({
   question: "Which pool gets the new workers?",
-  context: "ci-amd64 is short of workers at the morning peak.",
+  brief: "ci-amd64 is short of workers at the morning peak. [The queue](https://example.com/q) waits 9 minutes.",
   options: [
     { label: "ci-amd64", effect: "Shorter queues at the peak. Costs 12 more nodes." },
     { label: "golink", effect: "Faster links. The peak stays as it is." },

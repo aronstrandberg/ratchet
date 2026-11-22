@@ -136,12 +136,13 @@ const DecisionRaise = Tool.make("decision_raise", {
     "Ask the user to choose, with your recommendation, on this session's current task. The user answers in Ratchet's inbox, and Ratchet messages this session with the answer. The answer's meanwhile field says what to do until then.",
   parameters: Schema.Struct({
     question: DecisionSpec.fields.question.annotate({ description: "The question, in at most 140 characters." }),
-    context: DecisionSpec.fields.context.annotate({
-      description: "The current state, with links, and why the choice is the user's. At most 600 characters.",
+    brief: DecisionSpec.fields.brief.annotate({
+      description:
+        "Markdown prose that the user reads before the options, written for someone who has not read this session: what the task is, what happened that led to this choice, what is at stake, and why the choice is the user's. Link pull requests, builds and files. At most 4000 characters.",
     }),
     options: Schema.Array(Choice).pipe(Schema.check(Schema.isMinLength(2), Schema.isMaxLength(4))).annotate({
       description:
-        "Two to four options. label names the option in at most 80 characters. effect says what changes if it is chosen, what it costs and what can go wrong.",
+        "Two to four options. label names the option in at most 80 characters. effect says what changes if it is chosen, what it costs and what can go wrong, in at most 600 characters.",
     }),
     recommended: Schema.String.annotate({ description: "The label of the option you recommend." }),
     reason: DecisionSpec.fields.reason.annotate({ description: "Why you recommend it." }),
@@ -439,13 +440,13 @@ const handlers = (env: Env) => {
         resources((service, session) =>
           Effect.flatMap(named(resource), (ref) => service.setStatus(session, ref, state, note)),
         ),
-      decision_raise: ({ question, context, options, recommended, reason, kind, supersedes }) =>
+      decision_raise: ({ question, brief, options, recommended, reason, kind, supersedes }) =>
         decisions((service, session) =>
           service.raise(
             session,
             {
               question,
-              context,
+              brief,
               options,
               recommended,
               reason,

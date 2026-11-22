@@ -15,7 +15,7 @@ export const Choice = Schema.Struct({
   /** What the option is called. It names the option when the session recommends it and when I choose it. */
   label: text(80),
   /** What changes if it is chosen, what it costs and what can go wrong. */
-  effect: text(400),
+  effect: text(600),
 })
 
 export type Choice = typeof Choice.Type
@@ -33,8 +33,11 @@ export type DecisionKind = typeof DecisionKind.Type
 /** A decision as a session raises it. */
 export const DecisionSpec = Schema.Struct({
   question: text(140),
-  /** The current state, and why the choice is mine and not the session's. */
-  context: text(600),
+  /**
+   * Markdown prose, shown before the options, for someone who has not read the session: what the task is,
+   * what happened that led here, what is at stake, and why the choice is mine. With links.
+   */
+  brief: text(4000),
   options: Schema.Array(Choice).pipe(Schema.check(Schema.isMinLength(2), Schema.isMaxLength(4))),
   /** The label of the option the session recommends. */
   recommended: Schema.String,

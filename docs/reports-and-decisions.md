@@ -66,7 +66,7 @@ the work on one resource stands. A report says what I should read.
 | Field | Rule |
 | --- | --- |
 | Question | At most 140 characters |
-| Context | The current state, and why the choice is mine. At most 600 characters |
+| Brief | Markdown prose shown before the options, for someone who has not read the session: what the task is, what led here, what is at stake, and why the choice is mine, with links. At most 4000 characters. OpenCode's question tool shows a title and option labels only, which is too little to answer from |
 | Options | Two to four. Each has a label and its effect: what changes, what it costs, what can go wrong |
 | Recommended | One of the options, with the reason |
 | Kind | `reversible`, with how the choice is undone. Or `waits`, with what the session cannot do until I answer |
