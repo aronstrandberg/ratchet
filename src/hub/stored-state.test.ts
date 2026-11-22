@@ -27,6 +27,15 @@ test("a task stored before a followed resource could end still loads, with the r
   expect(isUnborn(state) ? [] : state.attachments.map((attachment) => attachment.ended)).toEqual([null])
 })
 
+test("a task stored before tasks held decisions still loads, with no decision open", () => {
+  const state = storedTask(
+    '{"_tag":"Idle","title":"t","parent":null,"sessions":["ses_1"],"running":[],"subagents":[],"questions":[],' +
+      '"attachments":[],"outbox":[]}',
+  )
+
+  expect(isUnborn(state) ? null : state.decisions).toEqual([])
+})
+
 const storedTaskEvent = Schema.decodeUnknownSync(Schema.fromJsonString(Schema.toCodecJson(taskMachine.eventSchema)))
 
 test("a wake-up queued before wake-ups carried their time still loads, from a snapshot and from the journal", () => {

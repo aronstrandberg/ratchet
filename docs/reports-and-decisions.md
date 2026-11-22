@@ -4,8 +4,8 @@ A session says what I need to read in a short, typed report, and asks for a
 choice with a decision that does not stop it. I read and answer both in an inbox
 that Ratchet serves, and answer OpenCode's own question forms there too.
 
-Decisions and the inbox page are built. Reports, and answering forms from the
-inbox, are not.
+Decisions and the inbox's routes are built. Reports, the inbox page, and
+answering forms from the inbox are not.
 
 This is the first step toward two parts of [direction.md](direction.md): the
 inbox of approvals and questions, and content for me posted through a tool call,
@@ -129,7 +129,7 @@ denies the question tool to a session with a recommendation replaces the prose.
 | --- | --- |
 | `GET /inbox` | What waits on me as JSON: `waits` decisions, then question forms and permission requests (titles only), then the decisions that took their default. Each item names its task. Built |
 | `POST /decisions/<id>/answer` | An option or a written answer, and a note. Built |
-| `GET /` | The page over these routes: a card per item, with a button per option. Built |
+| `GET /` | The page over these routes: a card per item, with a button per option. Not built |
 | `POST /sessions/<id>/forms/<form>/reply` | A form's answer, passed to OpenCode |
 | `POST /sessions/<id>/permissions/<request>/reply` | Allow once, allow always or reject, passed to OpenCode |
 

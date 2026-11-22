@@ -1,9 +1,11 @@
 import { Context, Effect, Layer, Schema } from "effect"
 import { causeText } from "../failure.ts"
+import type { DecisionId } from "../protocol/decision.ts"
 import type { SessionId, TaskId } from "../protocol/ids.ts"
 import type { ResourceKey } from "../protocol/resource.ts"
 import { CommitBuildsEntity, type CommitBuildsEvent, type CommitBuildsState } from "./commit-builds.ts"
 import { CommitRunsEntity, type CommitRunsEvent, type CommitRunsState } from "./commit-runs.ts"
+import { DecisionEntity, type DecisionEvent, type DecisionState } from "./decision.ts"
 import { IncidentEntity, type IncidentEvent, type IncidentState } from "./incident.ts"
 import * as Index from "./index-store.ts"
 import { LinearIssueEntity, type LinearIssueEvent, type LinearIssueState } from "./linear-issue.ts"
@@ -68,6 +70,12 @@ export interface Interface {
     key: ResourceKey,
     event: typeof CommitRunsEvent.Type,
   ) => Effect.Effect<CommitRunsState, CellUnavailable | Index.IndexError>
+  readonly decision: (id: DecisionId) => Effect.Effect<DecisionState, CellUnavailable>
+  /** Sends a decision an event and writes the state it answers with to the index. */
+  readonly sendDecision: (
+    id: DecisionId,
+    event: typeof DecisionEvent.Type,
+  ) => Effect.Effect<DecisionState, CellUnavailable | Index.IndexError>
 }
 
 /** The hub's cells. */
@@ -85,6 +93,7 @@ export const make = Effect.gen(function* () {
   const incidents = yield* IncidentEntity.client
   const commitBuilds = yield* CommitBuildsEntity.client
   const commitRuns = yield* CommitRunsEntity.client
+  const decisions = yield* DecisionEntity.client
 
   return Service.of({
     task: (id) => tasks(id).GetState().pipe(Effect.mapError(unavailable(`Task/${id}`))),
@@ -139,6 +148,14 @@ export const make = Effect.gen(function* () {
         .pipe(
           Effect.mapError(unavailable(`CommitRuns/${key}`)),
           Effect.tap((state) => index.putCommitRuns(key, state)),
+        ),
+    decision: (id) => decisions(id).GetState().pipe(Effect.mapError(unavailable(`Decision/${id}`))),
+    sendDecision: (id, event) =>
+      decisions(id)
+        .Send({ event })
+        .pipe(
+          Effect.mapError(unavailable(`Decision/${id}`)),
+          Effect.tap((state) => index.putDecision(id, state)),
         ),
   })
 })

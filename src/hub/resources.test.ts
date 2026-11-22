@@ -11,6 +11,7 @@ import * as Resources from "./resources.ts"
 import * as Tasks from "./tasks.ts"
 import * as TestHub from "./test-hub.ts"
 import { WakePolicy } from "./wake-policy.ts"
+import * as Wakes from "./wakes.ts"
 
 const run = <A, E>(program: Effect.Effect<A, E, TestHub.Services>, wake?: WakePolicy) =>
   Effect.runPromise(program.pipe(Effect.provide(TestHub.layer(wake))))
@@ -57,13 +58,13 @@ const setUp = (title = "Speed up the build", published: ResourceFacts = facts())
     ])
     yield* outside.publish(published)
 
-    return { tasks, outside, pullRequests: yield* Resources.Service }
+    return { tasks, outside, pullRequests: yield* Resources.Service, wakes: yield* Wakes.Service }
   })
 
 test("a wake-up OpenCode refuses stays queued, and the next delivery sends it once", () =>
   run(
     Effect.gen(function* () {
-      const { pullRequests, outside } = yield* setUp("Speed up the build", facts({ checks: [check("build", "pending")] }))
+      const { pullRequests, wakes: messages, outside } = yield* setUp("Speed up the build", facts({ checks: [check("build", "pending")] }))
       yield* pullRequests.register(session, ref, "owns")
 
       yield* outside.refuseWakes(true)
@@ -71,8 +72,8 @@ test("a wake-up OpenCode refuses stays queued, and the next delivery sends it on
       expect(observed).toEqual({ changes: ["CiFinished"], woke: 0 })
 
       yield* outside.refuseWakes(false)
-      expect(yield* pullRequests.deliverPending).toBe(1)
-      expect(yield* pullRequests.deliverPending).toBe(0)
+      expect(yield* messages.deliverPending).toBe(1)
+      expect(yield* messages.deliverPending).toBe(0)
 
       const wakes = yield* outside.wakes
       expect(wakes.map((wake) => wake.session)).toEqual([session])
@@ -103,11 +104,11 @@ test("a task that waits on a pull request hears its merge and not its CI or revi
 test("a session the policy does not let Ratchet wake gets no wake-up, and is told so when it registers", () =>
   run(
     Effect.gen(function* () {
-      const { pullRequests, outside } = yield* setUp()
+      const { pullRequests, wakes: messages, outside } = yield* setUp()
       expect((yield* pullRequests.register(session, ref, "owns")).wakes).toBe(false)
 
       expect(yield* pullRequests.observe(facts({ state: "merged" }))).toEqual({ changes: ["Merged"], woke: 0 })
-      expect(yield* pullRequests.deliverPending).toBe(0)
+      expect(yield* messages.deliverPending).toBe(0)
       expect(yield* outside.wakes).toEqual([])
     }),
     WakePolicy.cases.Nobody.make({}),
