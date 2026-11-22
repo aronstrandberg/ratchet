@@ -3,6 +3,7 @@ import * as Config from "../config.ts"
 import type { Env } from "../env.ts"
 import * as Telemetry from "../telemetry.ts"
 import * as Buildkite from "./buildkite.ts"
+import * as BuildReads from "./build-reads.ts"
 import * as CommitBuilds from "./commit-builds.ts"
 import * as CommitRuns from "./commit-runs.ts"
 import * as GitHub from "./github.ts"
@@ -20,6 +21,7 @@ const layer = (env: Env, config: Config.Gateway) =>
     OpenCode.layer(config.opencode),
     Linear.layer({ url: config.signIns.linear.resource }),
     IncidentIo.layer({ url: config.signIns["incident-io"].resource }),
+    BuildReads.layerWithoutDependencies,
     CommitBuilds.layerWithoutDependencies({ settle: "5 seconds", fresh: "20 seconds" }),
     CommitRuns.layerWithoutDependencies({ settle: "5 seconds" }),
     WebhookProxy.layer(config.proxy),

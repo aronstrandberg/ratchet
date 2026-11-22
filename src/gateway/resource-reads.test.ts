@@ -350,6 +350,17 @@ test("the builds that carry a commit leave out a build on a schedule and the mer
   )
 })
 
+test("a commit-builds list_jobs failure keeps its existing caller-visible message", async () => {
+  tools = { ...working, list_jobs: () => ({ problem: "jobs refused: caller-visible-detail" }) }
+  const merged = { owner: "lovablelabs", repo: "lovable", commit }
+
+  expect(await read(ResourceRef.cases.CommitBuilds.make(merged))).toEqual(
+    ReadReply.cases.Unavailable.make({
+      message: "Buildkite failed (list_jobs): jobs refused: caller-visible-detail",
+    }),
+  )
+})
+
 test("a commit that no build carries is answered as not found", async () => {
   const unbuilt = ResourceRef.cases.CommitBuilds.make({ owner: "lovablelabs", repo: "lovable", commit: "cd34".repeat(10) })
 

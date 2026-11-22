@@ -1,8 +1,10 @@
 import { Context, Effect, Layer, Option, Ref, Schema } from "effect"
 import { FetchHttpClient, type HttpClient } from "effect/http"
 import { causeText } from "../failure.ts"
+import { BuildAddressRef, type BuildDetails } from "../protocol/build.ts"
 import * as McpClient from "./mcp-client.ts"
 import type * as SignIns from "./sign-ins.ts"
+import { traceOperation } from "./traced-operation.ts"
 
 /** Buildkite did not answer, refused the request, or answered with something this adapter cannot read. */
 export class BuildkiteUnavailable extends Schema.TaggedError<BuildkiteUnavailable>()("BuildkiteUnavailable", {
@@ -11,6 +13,25 @@ export class BuildkiteUnavailable extends Schema.TaggedError<BuildkiteUnavailabl
 }) {
   override get message(): string {
     return `Buildkite failed (${this.operation}): ${causeText(this.cause)}`
+  }
+}
+
+/** Buildkite has no build under this address, or the sign-in cannot see it. */
+export class BuildNotFound extends Schema.TaggedError<BuildNotFound>()("BuildNotFound", {
+  ref: BuildAddressRef,
+}) {
+  override get message(): string {
+    return `Buildkite has no build ${this.ref.organization}/${this.ref.pipeline}#${this.ref.number}, or the sign-in cannot see it`
+  }
+}
+
+/** A build address names an organization other than the one this sign-in reads. */
+export class BuildOrganizationRefused extends Schema.TaggedError<BuildOrganizationRefused>()("BuildOrganizationRefused", {
+  configured: Schema.String,
+  requested: Schema.String,
+}) {
+  override get message(): string {
+    return `The Buildkite sign-in reads ${this.configured}, not ${this.requested}`
   }
 }
 
@@ -35,6 +56,8 @@ export interface Listed {
 
 type Failure = BuildkiteUnavailable | SignIns.NotSignedIn
 
+type ReadFailure = BuildNotFound | BuildOrganizationRefused | Failure
+
 /** Buildkite's builds, as the gateway reads them. */
 export interface Interface {
   /**
@@ -46,6 +69,8 @@ export interface Interface {
   readonly scheduled: (build: Listed) => Effect.Effect<boolean, Failure>
   /** The jobs that failed in a build, each by its step's key or else its name. None for a build that has not failed. */
   readonly failedJobs: (build: Listed) => Effect.Effect<ReadonlyArray<string>, Failure>
+  /** Reads one build by its browser address. */
+  readonly read: (ref: BuildAddressRef) => Effect.Effect<BuildDetails, ReadFailure>
 }
 
 /** The gateway's connection to Buildkite. */
@@ -67,6 +92,20 @@ const Builds = Schema.Struct({ items: Schema.Array(Build) })
 /** What `get_build` adds: what started the build, such as `webhook`, `trigger_job` or `schedule`. */
 const Shown = Schema.Struct({ source: Schema.String })
 
+/** What `get_build` answers for the fields the build route exposes. */
+const ShownBuild = Schema.Struct({
+  id: Schema.optional(Schema.NullOr(Schema.String)),
+  number: Schema.Int.pipe(Schema.check(Schema.isGreaterThan(0))),
+  state: Schema.String,
+  web_url: Schema.String,
+  branch: Schema.String,
+  commit: Schema.String,
+  message: Schema.optional(Schema.NullOr(Schema.String)),
+  created_at: Schema.DateFromString,
+  started_at: Schema.optional(Schema.NullOr(Schema.DateFromString)),
+  finished_at: Schema.optional(Schema.NullOr(Schema.DateFromString)),
+})
+
 const Jobs = Schema.Struct({
   items: Schema.Array(
     Schema.Struct({
@@ -83,6 +122,24 @@ const mergeQueue = "gh-readonly-queue/"
 const pipelineIn = (address: string): string | undefined => /^https?:\/\/[^/]+\/[^/]+\/([^/]+)\/builds\/\d+/.exec(address)?.[1]
 
 const hasFailed = (build: Listed) => build.state === "failing" || build.state === "failed"
+
+const missingBuildText = new Set(["Not Found", "Build not found", "No such build", "404"])
+
+const decodeMissingBuildJson = Schema.decodeUnknownOption(
+  Schema.fromJsonString(Schema.Record(Schema.String, Schema.Json)),
+)
+
+/** Whether a tool failure is one of Buildkite's complete missing-build representations. */
+const isMissingBuild = (problem: string): boolean => {
+  const text = problem.trim()
+
+  if (missingBuildText.has(text)) return true
+
+  return Option.exists(
+    decodeMissingBuildJson(text),
+    (fields) => Object.keys(fields).length === 1 && fields["message"] === "Not Found",
+  )
+}
 
 /** Builds the connection on Buildkite's MCP server. Nothing is sent until a read runs. */
 export const make = (config: Config): Effect.Effect<Interface, never, HttpClient.HttpClient | SignIns.Service> =>
@@ -110,60 +167,154 @@ export const make = (config: Config): Effect.Effect<Interface, never, HttpClient
         }),
       )
 
+    const traced = <A, E extends { readonly _tag: string }, R>(
+      operation: string,
+      effect: Effect.Effect<A, E, R>,
+    ): Effect.Effect<A, E, R> =>
+      traceOperation(effect, {
+        spanName: `Buildkite.${operation}`,
+        operation,
+        errorTagAttribute: "buildkite.error_tag",
+        attributes: { "buildkite.operation": operation },
+      })
+
     const one = (build: Listed) => ({ ...organization, pipeline_slug: build.pipeline, build_number: String(build.number) })
 
-    const buildsOf = Effect.fn("Buildkite.buildsOf")(function* (commit: string) {
-      yield* Effect.annotateCurrentSpan("buildkite.commit", commit)
-      const { items } = yield* buildkite.call("list_builds", { ...organization, commit, per_page: 100 }, Builds)
+    const buildsOf = (commit: string) =>
+      traced(
+        "buildsOf",
+        unavailable(
+          Effect.gen(function* () {
+            yield* Effect.annotateCurrentSpan("buildkite.commit", commit)
+            const { items } = yield* buildkite.call("list_builds", { ...organization, commit, per_page: 100 }, Builds)
 
-      return items
-        .flatMap((build): ReadonlyArray<Listed> => {
-          const pipeline = pipelineIn(build.web_url)
+            return items
+              .flatMap((build): ReadonlyArray<Listed> => {
+                const pipeline = pipelineIn(build.web_url)
 
-          return pipeline === undefined || build.branch.startsWith(mergeQueue)
-            ? []
-            : [
-                {
-                  id: build.id,
-                  pipeline,
-                  number: build.number,
-                  state: build.state,
-                  url: build.web_url,
-                  commit: build.commit,
-                  createdAt: build.created_at.getTime(),
-                },
-              ]
-        })
-        .toSorted((a, b) => a.createdAt - b.createdAt || a.id.localeCompare(b.id))
-    }, unavailable)
+                return pipeline === undefined || build.branch.startsWith(mergeQueue)
+                  ? []
+                  : [
+                      {
+                        id: build.id,
+                        pipeline,
+                        number: build.number,
+                        state: build.state,
+                        url: build.web_url,
+                        commit: build.commit,
+                        createdAt: build.created_at.getTime(),
+                      },
+                    ]
+              })
+              .toSorted((a, b) => a.createdAt - b.createdAt || a.id.localeCompare(b.id))
+          }),
+        ),
+      )
 
-    const scheduled = Effect.fn("Buildkite.scheduled")(function* (build: Listed) {
-      const known = yield* remembered(scheduledBuilds, build.id)
+    const scheduled = (build: Listed) =>
+      traced(
+        "scheduled",
+        unavailable(
+          Effect.gen(function* () {
+            const known = yield* remembered(scheduledBuilds, build.id)
 
-      if (Option.isSome(known)) return known.value
+            if (Option.isSome(known)) return known.value
 
-      const { source } = yield* buildkite.call("get_build", one(build), Shown)
-      yield* remember(scheduledBuilds, build.id, source === "schedule")
+            const { source } = yield* buildkite.call("get_build", one(build), Shown)
+            yield* remember(scheduledBuilds, build.id, source === "schedule")
 
-      return source === "schedule"
-    }, unavailable)
+            return source === "schedule"
+          }),
+        ),
+      )
 
-    const failedJobs = Effect.fn("Buildkite.failedJobs")(function* (build: Listed) {
-      if (!hasFailed(build)) return []
-      const known = yield* remembered(failures, build.id)
+    const failedJobs = (build: Listed) =>
+      traced(
+        "failedJobs",
+        unavailable(
+          Effect.gen(function* () {
+            if (!hasFailed(build)) return []
+            const known = yield* remembered(failures, build.id)
 
-      if (Option.isSome(known)) return known.value
+            if (Option.isSome(known)) return known.value
 
-      const jobs = yield* buildkite.call("list_jobs", { ...one(build), state: "failed,timed_out" }, Jobs)
-      const names = jobs.items.map((job) => job.step_key ?? job.name ?? "a job without a name")
+            const jobs = yield* buildkite.call("list_jobs", { ...one(build), state: "failed,timed_out" }, Jobs)
+            const names = jobs.items.map((job) => job.step_key ?? job.name ?? "a job without a name")
 
-      // More jobs can fail while a build is failing, so only a failed build's jobs are kept.
-      if (build.state === "failed") yield* remember(failures, build.id, names)
+            // More jobs can fail while a build is failing, so only a failed build's jobs are kept.
+            if (build.state === "failed") yield* remember(failures, build.id, names)
 
-      return names
-    }, unavailable)
+            return names
+          }),
+        ),
+      )
 
-    return Service.of({ buildsOf, scheduled, failedJobs })
+    const read = (ref: BuildAddressRef) =>
+      traced(
+        "read",
+        Effect.gen(function* () {
+          yield* Effect.annotateCurrentSpan({
+            "buildkite.organization": ref.organization,
+            "buildkite.pipeline": ref.pipeline,
+            "buildkite.build_number": ref.number,
+          })
+
+          if (ref.organization !== config.organization) {
+            return yield* new BuildOrganizationRefused({ configured: config.organization, requested: ref.organization })
+          }
+
+          const shown = yield* buildkite.call(
+            "get_build",
+            { ...organization, pipeline_slug: ref.pipeline, build_number: String(ref.number) },
+            ShownBuild,
+          ).pipe(
+            Effect.catchTags({
+              McpUnavailable: ({ operation }) =>
+                Effect.fail(new BuildkiteUnavailable({ operation, cause: "unavailable" })),
+              ToolFailed: ({ tool, problem }) =>
+                Effect.fail(
+                  isMissingBuild(problem)
+                    ? new BuildNotFound({ ref })
+                    : new BuildkiteUnavailable({ operation: tool, cause: "the tool failed" }),
+                ),
+            }),
+          )
+
+          const listed: Listed = {
+            id: shown.id ?? `${ref.organization}/${ref.pipeline}/${ref.number}`,
+            pipeline: ref.pipeline,
+            number: shown.number,
+            state: shown.state,
+            url: shown.web_url,
+            commit: shown.commit,
+            createdAt: shown.created_at.getTime(),
+          }
+
+          const jobs = yield* failedJobs(listed)
+
+          yield* Effect.annotateCurrentSpan({
+            "buildkite.state": shown.state,
+            "buildkite.failed_job_count": jobs.length,
+          })
+
+          return {
+            organization: ref.organization,
+            pipeline: ref.pipeline,
+            number: shown.number,
+            state: shown.state,
+            url: shown.web_url,
+            branch: shown.branch,
+            commit: shown.commit,
+            message: shown.message ?? null,
+            createdAt: shown.created_at.getTime(),
+            startedAt: shown.started_at?.getTime() ?? null,
+            finishedAt: shown.finished_at?.getTime() ?? null,
+            failedJobs: jobs,
+          }
+        }),
+      )
+
+    return Service.of({ buildsOf, scheduled, failedJobs, read })
   })
 
 /** The connection to Buildkite, still in need of an HTTP client and the gateway's sign-ins. */

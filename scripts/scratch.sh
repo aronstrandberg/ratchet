@@ -24,6 +24,7 @@ umask 077
   echo "LINEAR_MCP_URL=http://127.0.0.1:$fake/linear/mcp"
   echo "INCIDENT_IO_MCP_URL=http://127.0.0.1:$fake/incident/mcp"
   echo "BUILDKITE_MCP_URL=http://127.0.0.1:$fake/buildkite/mcp"
+  echo "BUILDKITE_ORGANIZATION=scratch"
   echo "SPACELIFT_URL=http://127.0.0.1:$fake/spacelift"
   echo "WEBHOOK_PROXY_URL=http://127.0.0.1:$fake/proxy"
   # Without a token the scratch Ratchet starts, and reading a pull request fails.

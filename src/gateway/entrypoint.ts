@@ -2,10 +2,12 @@ import { WorkerEntrypoint } from "cloudflare:workers"
 import { Effect, Result, Schema } from "effect"
 import type { Env } from "../env.ts"
 import { forBinding } from "../failure.ts"
+import { BuildReadReply } from "../protocol/build.ts"
 import { SessionId, TaskId } from "../protocol/ids.ts"
 import { ReadReply, ResourceRef } from "../protocol/resource.ts"
 import { Wake } from "../protocol/wake.ts"
 import type * as Grant from "./grant.ts"
+import * as BuildReads from "./build-reads.ts"
 import type * as LiveReads from "./live-reads.ts"
 import * as OpenCode from "./opencode.ts"
 import * as ResourceReads from "./resource-reads.ts"
@@ -15,6 +17,7 @@ import * as SignIns from "./sign-ins.ts"
 import * as Systems from "./systems.ts"
 
 const encodeReply = Schema.encodeEffect(ReadReply)
+const encodeBuildReply = Schema.encodeEffect(BuildReadReply)
 
 /**
  * The gateway as the hub and the Worker's routes call it.
@@ -113,6 +116,17 @@ export class Gateway extends WorkerEntrypoint<Env> {
 
     return this.#run(
       Schema.decodeEffect(ResourceRef)(ref).pipe(Effect.flatMap(ResourceReads.read), Effect.flatMap(encodeReply)),
+    )
+  }
+
+  /**
+   * Reads one Buildkite build by its browser address.
+   *
+   * Expected input and integration failures are tagged plain replies so the Worker route can assign status codes.
+   */
+  async readBuild(address: string): Promise<typeof BuildReadReply.Encoded> {
+    return this.#run(
+      Effect.flatMap(BuildReads.Service, (reads) => reads.read(address)).pipe(Effect.flatMap(encodeBuildReply)),
     )
   }
 }
