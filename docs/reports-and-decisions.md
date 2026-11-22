@@ -1,9 +1,15 @@
 # Reports and decisions
 
-Proposed, not built. A session says what I need to read in a short, typed
-report, and asks for a choice with a decision that does not stop it. I read and
-answer both in a web page that Ratchet serves, and answer OpenCode's own
-question forms there too.
+A session says what I need to read in a short, typed report, and asks for a
+choice with a decision that does not stop it. I read and answer both in an inbox
+that Ratchet serves, and answer OpenCode's own question forms there too.
+
+Decisions and the inbox page are built. Reports, and answering forms from the
+inbox, are not.
+
+This is the first step toward two parts of [direction.md](direction.md): the
+inbox of approvals and questions, and content for me posted through a tool call,
+apart from the session's own messages.
 
 It replaces the `status`, `decision` and `done` tools in
 `agent-setup/README.md`, and fills in the Decision cell in
@@ -30,6 +36,7 @@ It replaces the `status`, `decision` and `done` tools in
 | A choice that can be undone | The session acts on the recommended option at once. I can choose another option until the task is done, which wakes the session |
 | A choice that cannot be undone | The session waits. It works on something else or ends its turn, and my answer wakes it |
 | Timers | None. A decision takes its default when it is raised, not after a wait |
+| Relay | The answer is a wake-up in the task's outbox, delivered like a resource's change. The decision closes when I answer; the outbox holds the wake-up until OpenCode has it |
 | Question forms | Stay, for a turn that cannot go on without an answer and has no recommendation. Ratchet shows a form's fields and answers it through OpenCode's API. A form never takes a default: it does not say whether the choice can be undone |
 | Where I answer | A web page served by Ratchet, over routes that any other surface can call |
 | Receivers | Subscriptions on the task. Built first: the board. Later: the task that forked this one, the coordinator, a channel that reaches me |
@@ -76,17 +83,13 @@ arrives.
 ```mermaid
 stateDiagram-v2
   [*] --> Open: decision_raise
-  Open --> Answered: I choose an option, or write another answer
-  Open --> Stood: the task is done (reversible only)
-  Open --> Superseded: a newer decision replaces it
-  Open --> Withdrawn: decision_close
-  Answered --> Relayed: OpenCode has the wake-up
-  Answered --> [*]: I chose what the session already acts on
-  Relayed --> [*]
-  Stood --> [*]
-  Superseded --> [*]
-  Withdrawn --> [*]
+  Open --> Closed: answered in the inbox or in the session, superseded, or withdrawn
+  Closed --> [*]
 ```
+
+A closed decision records how it ended: `Answered` (an option or a written
+answer, a note, and where: the inbox or the session), `Superseded` (by which
+decision) or `Withdrawn` (with the reason).
 
 | Event | What happens |
 | --- | --- |
@@ -94,7 +97,9 @@ stateDiagram-v2
 | A `reversible` decision opens | The task's tag does not change. The decision is listed under "took the default" |
 | I choose the recommended option of a `reversible` decision | It closes. Nobody is woken |
 | I choose anything else, or answer a `waits` decision | A wake-up goes to the task's session with the choice and my note, the way a resource's change does |
-| The wake-up cannot be delivered | The decision stays `Answered` and the board shows it. An answer counts as acted on when OpenCode has the message, because the message starts a turn |
+| The wake-up cannot be delivered | It stays in the task's outbox, the board counts it, and the gateway tries again every minute. OpenCode admits a message once, by its ID |
+| A decision of the same task replaces it | `decision_raise` with `supersedes` closes the old one |
+| The task ends | Not built: there is no `done` yet. A `reversible` decision stays open until I answer it or the session withdraws it |
 | I answer in the session's own window | The session closes the decision with `decision_close` and the option I chose |
 | The question no longer matters | The session closes it with `decision_close` and the reason |
 
@@ -122,11 +127,11 @@ denies the question tool to a session with a recommendation replaces the prose.
 
 | Route | Does |
 | --- | --- |
-| `GET /inbox` | What waits on me: `waits` decisions, question forms and permission requests, oldest first. Then what took a default, and the latest reports, newest first. Each item names its task |
-| `POST /decisions/<id>/answer` | An option or a written answer, and a note |
+| `GET /inbox` | What waits on me as JSON: `waits` decisions, then question forms and permission requests (titles only), then the decisions that took their default. Each item names its task. Built |
+| `POST /decisions/<id>/answer` | An option or a written answer, and a note. Built |
+| `GET /` | The page over these routes: a card per item, with a button per option. Built |
 | `POST /sessions/<id>/forms/<form>/reply` | A form's answer, passed to OpenCode |
 | `POST /sessions/<id>/permissions/<request>/reply` | Allow once, allow always or reject, passed to OpenCode |
-| `GET /` | The page over these routes |
 
 An answer records who gave it: me on a named surface, the session after I
 answered in its window, or later the coordinator.
