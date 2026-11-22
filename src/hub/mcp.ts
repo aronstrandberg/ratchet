@@ -3,10 +3,12 @@ import { McpProtocol, McpSchema, McpServer, Tool, Toolkit } from "effect/ai"
 import { HttpRouter } from "effect/http"
 import type { Env } from "../env.ts"
 import { causeText } from "../failure.ts"
+import { Choice, DecisionId, DecisionKind, DecisionSpec } from "../protocol/decision.ts"
 import { SessionId } from "../protocol/ids.ts"
 import { PullRequestRef } from "../protocol/pull-request.ts"
 import { Relation, ResourceRef, parseReference } from "../protocol/resource.ts"
 import type { CellUnavailable } from "./cells.ts"
+import * as Decisions from "./decisions.ts"
 import { type Services, runtime } from "./cluster.ts"
 import type { IndexError } from "./index-store.ts"
 import type { ResourceNotFound, ResourceNotSignedIn, ResourceUnreadable } from "./resource-source.ts"
@@ -48,12 +50,21 @@ const instructions = `Ratchet tracks this session's work as tasks. A session wor
 - Ratchet also follows the Spacelift runs that apply the merged change, on the stacks that planned the pull
   request. It messages this session when a run waits for someone to confirm it or for an approval, fails,
   or is discarded. A run that waits applies a change to real infrastructure: read its plan and tell the
-  user what it would change. Confirm it only when the user has asked this session to.`
+  user what it would change. Confirm it only when the user has asked this session to.
+- When you need the user to choose and you have a recommendation, call decision_raise instead of asking in
+  the session or with the question tool. The user answers in Ratchet's inbox, and Ratchet messages this
+  session with the answer. A choice that can be undone does not stop you: act on your recommendation at
+  once, and undo it if the user chooses otherwise. A choice that cannot be undone waits for the answer:
+  changing production, deleting data, sending messages to people, merging, spending money, or changing the
+  task's scope or design. Keep the question tool for a turn that cannot go on without an answer and where
+  you have no recommendation.
+- When the user answers a decision in this session's own window instead, or the question no longer
+  matters, call decision_close.`
 
 const Failure = Schema.Struct({ message: Schema.String })
 
 const TaskCurrent = Tool.make("task_current", {
-  description: "Show the task this session works on now: its state, parent, subagents and open questions.",
+  description: "Show the task this session works on now: its state, parent, subagents, open questions and open decisions.",
   parameters: Tool.EmptyParams,
   success: Tasks.TaskView,
   failure: Failure,
@@ -115,6 +126,59 @@ const SubagentDeclare = Tool.make("subagent_declare", {
     kind: SubagentKind,
   }),
   success: Tasks.TaskView,
+  failure: Failure,
+  failureMode: "return",
+  dependencies: [McpSchema.McpRequestContext],
+})
+
+const DecisionRaise = Tool.make("decision_raise", {
+  description:
+    "Ask the user to choose, with your recommendation, on this session's current task. The user answers in Ratchet's inbox, and Ratchet messages this session with the answer. The answer's meanwhile field says what to do until then.",
+  parameters: Schema.Struct({
+    question: DecisionSpec.fields.question.annotate({ description: "The question, in at most 140 characters." }),
+    context: DecisionSpec.fields.context.annotate({
+      description: "The current state, with links, and why the choice is the user's. At most 600 characters.",
+    }),
+    options: Schema.Array(Choice).pipe(Schema.check(Schema.isMinLength(2), Schema.isMaxLength(4))).annotate({
+      description:
+        "Two to four options. label names the option in at most 80 characters. effect says what changes if it is chosen, what it costs and what can go wrong.",
+    }),
+    recommended: Schema.String.annotate({ description: "The label of the option you recommend." }),
+    reason: DecisionSpec.fields.reason.annotate({ description: "Why you recommend it." }),
+    kind: Schema.Union([
+      Schema.Struct({
+        undo: DecisionKind.cases.Reversible.fields.undo.annotate({
+          description: "How you undo the recommended option if the user chooses another.",
+        }),
+      }),
+      Schema.Struct({
+        blocks: DecisionKind.cases.Waits.fields.blocks.annotate({
+          description: "What cannot go on until the user answers.",
+        }),
+      }),
+    ]).annotate({
+      description:
+        "{undo}: the choice can be undone, and you act on the recommended option at once. {blocks}: it cannot, and you wait for the answer.",
+    }),
+    supersedes: Schema.optional(DecisionId).annotate({
+      description: "An open decision of this task that this one replaces. It closes.",
+    }),
+  }),
+  success: Decisions.Raised,
+  failure: Failure,
+  failureMode: "return",
+  dependencies: [McpSchema.McpRequestContext],
+})
+
+const DecisionClose = Tool.make("decision_close", {
+  description:
+    "Close an open decision of this session's tasks: with option, the user chose it in this session's own window. Without option, the question no longer matters.",
+  parameters: Schema.Struct({
+    decision: DecisionId.annotate({ description: "The decision's ID, starting with dec_." }),
+    option: Schema.optional(Schema.String).annotate({ description: "The label of the option the user chose here." }),
+    reason: Schema.String.annotate({ description: "What the user said, or why the question no longer matters." }),
+  }),
+  success: Schema.Struct({ decision: DecisionId }),
   failure: Failure,
   failureMode: "return",
   dependencies: [McpSchema.McpRequestContext],
@@ -242,6 +306,8 @@ const SessionTools = Toolkit.make(
   ResourceRegister,
   ResourceSetStatus,
   ResourceUnregister,
+  DecisionRaise,
+  DecisionClose,
 )
 
 /** What a session gave as a resource is none of the kinds Ratchet follows. */
@@ -283,6 +349,11 @@ type ToolFailure =
   | Tasks.NotATaskOfSession
   | Resources.NotRegistered
   | Resources.AlreadyOwned
+  | Decisions.InvalidDecision
+  | Decisions.UnknownDecision
+  | Decisions.DecisionClosed
+  | Decisions.NotADecisionOfSession
+  | Decisions.UnknownOption
   | UnknownReference
   | ResourceNotFound
   | ResourceNotSignedIn
@@ -301,6 +372,11 @@ const explain = Match.type<ToolFailure>().pipe(
     NotRegistered: ({ resource }) => `${resource} is not registered on a task of this session. Register it first.`,
     AlreadyOwned: ({ resource, owner }) =>
       `${resource} is the ticket of task ${owner} already, and one task at most owns it. Register it with relation waits_on or context, or work in that task.`,
+    InvalidDecision: (failure) => `${failure.message}. Fix it and raise it again.`,
+    UnknownDecision: (failure) => `${failure.message}. task_current lists the open decisions of this session's task.`,
+    DecisionClosed: (failure) => failure.message,
+    NotADecisionOfSession: (failure) => failure.message,
+    UnknownOption: (failure) => failure.message,
     UnknownReference: (failure) =>
       `${failure.message}. Give a pull request, a Linear issue or an incident by its address or its short name, such as owner/repo#12, DX-1550 or INC-123.`,
     ResourceNotFound: (failure) => `${failure.message}. It is not registered.`,
@@ -332,6 +408,10 @@ const handlers = (env: Env) => {
     use: (resources: Resources.Interface, session: SessionId) => Effect.Effect<A, E>,
   ) => Effect.flatMap(caller, (session) => run(Effect.flatMap(Resources.Service, (service) => use(service, session))))
 
+  const decisions = <A, E extends ToolFailure>(
+    use: (decisions: Decisions.Interface, session: SessionId) => Effect.Effect<A, E>,
+  ) => Effect.flatMap(caller, (session) => run(Effect.flatMap(Decisions.Service, (service) => use(service, session))))
+
   return SessionTools.toLayer(
     SessionTools.of({
       task_current: () => tasks((service, session) => service.current(session)),
@@ -358,6 +438,28 @@ const handlers = (env: Env) => {
       resource_set_status: ({ resource, state, note }) =>
         resources((service, session) =>
           Effect.flatMap(named(resource), (ref) => service.setStatus(session, ref, state, note)),
+        ),
+      decision_raise: ({ question, context, options, recommended, reason, kind, supersedes }) =>
+        decisions((service, session) =>
+          service.raise(
+            session,
+            {
+              question,
+              context,
+              options,
+              recommended,
+              reason,
+              kind:
+                "undo" in kind
+                  ? DecisionKind.cases.Reversible.make({ undo: kind.undo })
+                  : DecisionKind.cases.Waits.make({ blocks: kind.blocks }),
+            },
+            Option.fromUndefinedOr(supersedes),
+          ),
+        ),
+      decision_close: ({ decision, option, reason }) =>
+        decisions((service, session) =>
+          Effect.as(service.close(session, decision, Option.fromUndefinedOr(option), reason), { decision }),
         ),
       resource_unregister: ({ resource }) =>
         resources((service, session) => Effect.flatMap(named(resource), (ref) => service.unregister(session, ref))),

@@ -8,6 +8,8 @@ import type { Wake } from "../protocol/wake.ts"
 import * as Cells from "./cells.ts"
 import { CommitBuildsEntity, commitBuildsMachine } from "./commit-builds.ts"
 import { CommitRunsEntity, commitRunsMachine } from "./commit-runs.ts"
+import { DecisionEntity, decisionMachine } from "./decision.ts"
+import * as Decisions from "./decisions.ts"
 import { IncidentEntity, incidentMachine } from "./incident.ts"
 import * as Index from "./index-store.ts"
 import { LinearIssueEntity, linearIssueMachine } from "./linear-issue.ts"
@@ -19,6 +21,7 @@ import { SessionEntity, sessionMachine } from "./session.ts"
 import { TaskEntity, taskMachine } from "./task.ts"
 import * as Tasks from "./tasks.ts"
 import * as WakePolicy from "./wake-policy.ts"
+import * as Wakes from "./wakes.ts"
 
 type Row = Readonly<Record<string, string | number | null>>
 
@@ -108,6 +111,7 @@ const cells = Layer.mergeAll(
   EntityMachine.layer(IncidentEntity, incidentMachine),
   EntityMachine.layer(CommitBuildsEntity, commitBuildsMachine),
   EntityMachine.layer(CommitRunsEntity, commitRunsMachine),
+  EntityMachine.layer(DecisionEntity, decisionMachine),
 ).pipe(Layer.provideMerge(TestRunner.layer))
 
 /**
@@ -115,8 +119,8 @@ const cells = Layer.mergeAll(
  * SQLite in memory, and OpenCode, GitHub, Linear and incident.io are what `Control` makes them.
  */
 export const layer = (wake: WakePolicy.WakePolicy = WakePolicy.WakePolicy.cases.Everybody.make({})) =>
-  Resources.layerWithoutDependencies.pipe(
-    Layer.provideMerge(Tasks.layerWithoutDependencies),
+  Layer.mergeAll(Resources.layerWithoutDependencies, Decisions.layerWithoutDependencies).pipe(
+    Layer.provideMerge(Layer.mergeAll(Tasks.layerWithoutDependencies, Wakes.layerWithoutDependencies)),
     Layer.provideMerge(Cells.layerWithoutDependencies),
     Layer.provideMerge(Layer.mergeAll(Index.layer(sqlite()), outside, Layer.succeed(WakePolicy.Service, wake))),
     Layer.provideMerge(cells),

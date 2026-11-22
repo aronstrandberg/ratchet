@@ -1,4 +1,4 @@
-import { Clock, Context, Effect, Layer, Option, Result, Schema } from "effect"
+import { Clock, Context, Effect, Layer, Option, Schema } from "effect"
 import { type SessionId, TaskId } from "../protocol/ids.ts"
 import {
   Outcome,
@@ -20,12 +20,12 @@ import * as Index from "./index-store.ts"
 import * as LinearIssue from "./linear-issue.ts"
 import * as PullRequest from "./pull-request.ts"
 import * as ResourceSource from "./resource-source.ts"
-import * as SessionControl from "./session-control.ts"
 import { boundTask } from "./session.ts"
 import type { Subscriber } from "./subscribers.ts"
 import { TaskEvent, isUnborn } from "./task.ts"
 import * as Tasks from "./tasks.ts"
 import * as WakePolicy from "./wake-policy.ts"
+import * as Wakes from "./wakes.ts"
 
 /** No task of the session follows this resource. */
 export class NotRegistered extends Schema.TaggedError<NotRegistered>()("NotRegistered", {
@@ -143,8 +143,6 @@ export interface Interface {
    * commit followed from then on, by the tasks that own it.
    */
   readonly observe: (observed: ResourceFacts) => Effect.Effect<Observed, Failure>
-  /** Tries again to deliver every wake-up that has not reached its session, and returns how many did. */
-  readonly deliverPending: Effect.Effect<number, Failure>
   /** The resources worth reading again: someone follows them and they have not ended. */
   readonly watched: Effect.Effect<ReadonlyArray<ResourceRef>, Index.IndexError>
 }
@@ -255,13 +253,13 @@ const wakeText = (label: string, relevant: ReadonlyArray<Notice>, subject: Subje
     "This is an automatic notification, not a message from Aron. Read it at its source before you act on it.",
   ].join("\n")
 
-/** Builds the resources on the cells, the tasks, the index, the gateway's reads and control over sessions. */
+/** Builds the resources on the cells, the tasks, the index, the gateway's reads and the messages to sessions. */
 export const make = Effect.gen(function* () {
   const cells = yield* Cells.Service
   const tasks = yield* Tasks.Service
   const index = yield* Index.Service
   const source = yield* ResourceSource.Service
-  const control = yield* SessionControl.Service
+  const wakes = yield* Wakes.Service
   const policy = yield* WakePolicy.Service
 
   /** The cell of a resource, whatever its kind. */
@@ -475,24 +473,6 @@ export const make = Effect.gen(function* () {
     yield* cells.sendTask(task, TaskEvent.Detached({ resource: keyOf(ref) }))
   })
 
-  const deliver = Effect.fn("Resources.deliver")(function* (task: TaskId) {
-    const state = yield* cells.task(task)
-
-    if (isUnborn(state)) return 0
-    let delivered = 0
-
-    for (const queued of state.outbox) {
-      // A wake-up that fails stays queued. It is sent again with the same ID, which OpenCode admits once.
-      const sent = yield* Effect.result(control.wake(queued))
-
-      if (Result.isFailure(sent)) continue
-      yield* cells.sendTask(task, TaskEvent.WakeDelivered({ id: queued.id }))
-      delivered++
-    }
-
-    return delivered
-  })
-
   /** Applies an observation and tells the tasks it concerns. */
   const settle = Effect.fn("Resources.settle")(function* (observed: ResourceFacts) {
     const key = keyOf(subjectOf(observed))
@@ -516,17 +496,12 @@ export const make = Effect.gen(function* () {
 
       if (isUnborn(task)) continue
       const current = boundTask(yield* cells.session(subscriber.session)) === subscriber.task
-      yield* cells.sendTask(
-        subscriber.task,
-        TaskEvent.WakeQueued({
-          // One batch of changes has one ID, so the same observation never wakes a session twice.
-          id: `${key}@${version === "" ? now : version}:${relevant.map((notice) => notice.tag).join("+")}`,
-          session: subscriber.session,
-          text: wakeText(label, relevant, { title: task.title, current }),
-          at: now,
-        }),
-      )
-      woke += yield* deliver(subscriber.task)
+      woke += yield* wakes.send(subscriber.task, {
+        // One batch of changes has one ID, so the same observation never wakes a session twice.
+        id: `${key}@${version === "" ? now : version}:${relevant.map((notice) => notice.tag).join("+")}`,
+        session: subscriber.session,
+        text: wakeText(label, relevant, { title: task.title, current }),
+      })
     }
 
     return { changes: notices.map((notice) => notice.tag), woke, owners: standing.subscribers.filter(owns), follows }
@@ -633,17 +608,9 @@ export const make = Effect.gen(function* () {
     return { task: yield* tasks.taskOf(session), resources: rows }
   })
 
-  const deliverPending = Effect.gen(function* () {
-    let woke = 0
-
-    for (const task of yield* index.tasksWithUndelivered) woke += yield* deliver(task)
-
-    return woke
-  }).pipe(Effect.withSpan("Resources.deliverPending"))
-
   const watched = Effect.map(index.resources("watched"), (rows) => rows.flatMap((row) => Option.toArray(refOf(row.key))))
 
-  return Service.of({ register, setStatus, unregister, list, observe, deliverPending, watched })
+  return Service.of({ register, setStatus, unregister, list, observe, watched })
 })
 
 /** The resources, still in need of everything they are built on. */
