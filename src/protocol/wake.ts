@@ -17,6 +17,11 @@ export const Wake = Schema.Struct({
    * agent reads it with the next message.
    */
   resume: Schema.Boolean.pipe(Schema.withDecodingDefaultKey(Effect.succeed(true))),
+  /**
+   * Whether the gateway asks a classifier, before it starts a turn, whether the message is new to the
+   * session and something it has to act on. When it is not, the message starts no turn.
+   */
+  screen: Schema.Boolean.pipe(Schema.withDecodingDefaultKey(Effect.succeed(false))),
 })
 
 export type Wake = typeof Wake.Type

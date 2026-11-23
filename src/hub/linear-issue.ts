@@ -5,6 +5,7 @@ import { TaskId } from "../protocol/ids.ts"
 import { LinearIssueFacts } from "../protocol/linear.ts"
 import type { Outcome, Relation } from "../protocol/resource.ts"
 import { Subscriber, attachExclusive, detach } from "./subscribers.ts"
+import type { Attention } from "./attention.ts"
 
 const subscribers = { subscribers: Schema.Array(Subscriber) }
 
@@ -121,22 +122,28 @@ export const changes = (before: LinearIssueState, after: LinearIssueState): Read
 }
 
 const isEnd = Change.isAnyOf(["Completed", "Canceled"])
-const isBoardMove = Change.isAnyOf(["StateChanged"])
 
 /**
- * Whether a change should wake a session of a task with this relation to the issue.
+ * What a change asks of a session of a task with this relation to the issue, or null for nothing.
  *
- * An owner hears a comment, a reassignment away from me and the end. A move on the board is shown and wakes
- * nobody: the owning session makes most of them itself. A task that waits hears only the end.
+ * An owner acts on a reassignment and a cancellation. A comment is screened, since bots comment too. A move
+ * on the board and completion are noted: the owning session makes most of them itself. A task that waits
+ * hears only the end.
  */
-export const wakes = (relation: Relation, change: Change): boolean => {
+export const attention = (relation: Relation, change: Change): Attention | null => {
   switch (relation) {
     case "context":
-      return false
+      return null
     case "waits_on":
-      return isEnd(change)
+      return isEnd(change) ? "act" : null
     case "owns":
-      return !isBoardMove(change)
+      return Change.match(change, {
+        StateChanged: () => "note" as const,
+        Commented: () => "screen" as const,
+        Reassigned: () => "act" as const,
+        Completed: () => "note" as const,
+        Canceled: () => "act" as const,
+      })
   }
 }
 

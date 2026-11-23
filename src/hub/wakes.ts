@@ -20,6 +20,8 @@ export interface Message {
   readonly card?: Card
   /** Whether the message starts a turn. It does unless this says otherwise. */
   readonly resume?: boolean
+  /** Whether a classifier decides if the message starts a turn. Only a message that would start one is screened. */
+  readonly screen?: boolean
   /**
    * When the message was queued, in milliseconds since the epoch: now unless given. A message sent again
    * after a failure gives the same time, so OpenCode knows it as the same message.
@@ -84,6 +86,7 @@ export const make = Effect.gen(function* () {
         at,
         card: message.card ?? null,
         resume: message.resume ?? true,
+        screen: message.screen ?? false,
       }),
     )
 

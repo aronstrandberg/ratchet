@@ -24,6 +24,7 @@ import { boundTask } from "./session.ts"
 import type { Subscriber } from "./subscribers.ts"
 import { TaskEvent, isUnborn } from "./task.ts"
 import * as Tasks from "./tasks.ts"
+import { type Attention, strongest } from "./attention.ts"
 import * as WakePolicy from "./wake-policy.ts"
 import * as Wakes from "./wakes.ts"
 
@@ -156,8 +157,8 @@ interface Notice {
   readonly tag: string
   /** One line a session can read. */
   readonly text: string
-  /** Whether it should wake a session of a task with this relation to the resource. */
-  readonly wakes: (relation: Relation) => boolean
+  /** What it asks of a session of a task with this relation to the resource, or null for nothing. */
+  readonly attention: (relation: Relation) => Attention | null
 }
 
 /** A resource's cell as every kind of resource shows it. */
@@ -335,7 +336,7 @@ export const make = Effect.gen(function* () {
             notices: PullRequest.changes(before, after).map((change) => ({
               tag: change._tag,
               text: PullRequest.describe(change),
-              wakes: (relation: Relation) => PullRequest.wakes(relation, change),
+              attention: (relation: Relation) => PullRequest.attention(relation, change),
             })),
           }
 
@@ -367,7 +368,7 @@ export const make = Effect.gen(function* () {
             notices: LinearIssue.changes(before, after).map((change) => ({
               tag: change._tag,
               text: LinearIssue.describe(change),
-              wakes: (relation: Relation) => LinearIssue.wakes(relation, change),
+              attention: (relation: Relation) => LinearIssue.attention(relation, change),
             })),
           }
         }),
@@ -388,7 +389,7 @@ export const make = Effect.gen(function* () {
             notices: Incident.changes(before, after).map((change) => ({
               tag: change._tag,
               text: Incident.describe(change),
-              wakes: (relation: Relation) => Incident.wakes(relation, change),
+              attention: (relation: Relation) => Incident.attention(relation, change),
             })),
           }
         }),
@@ -412,7 +413,7 @@ export const make = Effect.gen(function* () {
             notices: CommitBuilds.changes(before, after).map((change) => ({
               tag: change._tag,
               text: CommitBuilds.describe(change),
-              wakes: (relation: Relation) => CommitBuilds.wakes(relation, change),
+              attention: (relation: Relation) => CommitBuilds.attention(relation, change),
             })),
           }
         }),
@@ -435,7 +436,7 @@ export const make = Effect.gen(function* () {
             notices: CommitRuns.changes(before, after).map((change) => ({
               tag: change._tag,
               text: CommitRuns.describe(change),
-              wakes: (relation: Relation) => CommitRuns.wakes(relation, change),
+              attention: (relation: Relation) => CommitRuns.attention(relation, change),
             })),
           }
         }),
@@ -489,7 +490,8 @@ export const make = Effect.gen(function* () {
     let woke = 0
 
     for (const subscriber of standing.subscribers) {
-      const relevant = notices.filter((notice) => notice.wakes(subscriber.relation))
+      const relevant = notices.filter((notice) => notice.attention(subscriber.relation) !== null)
+      const level = strongest(notices.flatMap((notice) => Option.toArray(Option.fromNullOr(notice.attention(subscriber.relation)))))
 
       if (relevant.length === 0 || !WakePolicy.allows(policy, subscriber.session)) continue
       const task = yield* cells.task(subscriber.task)
@@ -501,6 +503,8 @@ export const make = Effect.gen(function* () {
         id: `${key}@${version === "" ? now : version}:${relevant.map((notice) => notice.tag).join("+")}`,
         session: subscriber.session,
         text: wakeText(label, relevant, { title: task.title, current }),
+        resume: level !== "note",
+        screen: level === "screen",
       })
     }
 

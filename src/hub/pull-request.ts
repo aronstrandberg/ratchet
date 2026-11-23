@@ -5,6 +5,7 @@ import { TaskId } from "../protocol/ids.ts"
 import { Check, PullRequestFacts, PullRequestRef, Review, Thread } from "../protocol/pull-request.ts"
 import type { Outcome, Relation } from "../protocol/resource.ts"
 import { Subscriber, attach, detach } from "./subscribers.ts"
+import type { Attention } from "./attention.ts"
 
 /**
  * Where CI stands on one head commit. It moves forward only: `Absent` until a check reports, `Running`, then
@@ -229,19 +230,32 @@ const changesWhileOpen = (before: Open, after: Open): ReadonlyArray<Change> => {
 }
 
 /**
- * Whether a change should wake a session of a task with this relation to the pull request.
+ * What a change asks of a session of a task with this relation to the pull request, or null for nothing.
  *
- * An owner hears what it can act on. A task that waits hears only the end. A resolved thread and a queue
- * entry need no action, so they wake nobody.
+ * A task that waits hears only the end. An owner acts on a failure, a conflict, a request for changes and
+ * an unexpected end. Passed checks, other reviews and threads may already be known to the session, which
+ * often caused them, so they are screened. A merge is noted: the owner usually merged it.
  */
-export const wakes = (relation: Relation, change: Change): boolean => {
+export const attention = (relation: Relation, change: Change): Attention | null => {
   switch (relation) {
     case "context":
-      return false
+      return null
     case "waits_on":
-      return isEnd(change)
+      return isEnd(change) ? "act" : null
     case "owns":
-      return !needsNoAction(change)
+      return Change.match(change, {
+        HeadMoved: () => null,
+        CiFailing: () => "act" as const,
+        CiFinished: ({ failed }) => (failed.length > 0 ? ("act" as const) : ("screen" as const)),
+        ReviewSubmitted: ({ state }) => (state === "changes_requested" ? ("act" as const) : ("screen" as const)),
+        ThreadOpened: () => "screen" as const,
+        ThreadResolved: () => "note" as const,
+        Conflicting: () => "act" as const,
+        Queued: () => "note" as const,
+        Dequeued: () => "act" as const,
+        Merged: () => "note" as const,
+        Closed: () => "act" as const,
+      })
   }
 }
 
@@ -255,8 +269,6 @@ export const outcomeOf = (state: PullRequestState): Outcome | null =>
     Merged: () => "merged",
     Closed: () => "closed",
   })
-
-const needsNoAction = Change.isAnyOf(["ThreadResolved", "Queued", "HeadMoved"])
 
 const short = (head: string) => head.slice(0, 7)
 

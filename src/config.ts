@@ -1,6 +1,7 @@
 import { Option, Redacted, Result, Schema } from "effect"
 import type { Target } from "./gateway/grant.ts"
 import type { System } from "./gateway/systems.ts"
+import type * as WakeGate from "./gateway/wake-gate.ts"
 import * as WakePolicy from "./hub/wake-policy.ts"
 
 /** A setting the service cannot start without is missing or malformed. The message holds no secret. */
@@ -18,6 +19,8 @@ export class InvalidConfig extends Schema.TaggedError<InvalidConfig>()("InvalidC
 export interface Settings {
   readonly OPENCODE_URL?: string
   readonly OPENCODE_PASSWORD?: string
+  /** The decision model that screens wake-ups, as `provider/model`. `opencode/jev-1.13-free` unless set. */
+  readonly WAKE_SCREEN_MODEL?: string
   readonly GITHUB_TOKEN?: string
   /** Where Linear's MCP server is. Only a scratch Ratchet sets it, to a stand-in. */
   readonly LINEAR_MCP_URL?: string
@@ -49,6 +52,8 @@ export interface Hub {
 /** What the gateway needs to know to start. */
 export interface Gateway {
   readonly opencode: { readonly url: string; readonly password: Redacted.Redacted<string> }
+  /** How the gateway decides whether a wake-up starts a turn. */
+  readonly wakeGate: WakeGate.Config
   readonly github: { readonly token: Redacted.Redacted<string> }
   /**
    * What the gateway signs in to for each system: the address the system protects, and the scope to ask for.
@@ -94,9 +99,22 @@ export const gateway = (settings: Settings): Result.Result<Gateway, InvalidConfi
     const spacelift = Option.getOrElse(optional(settings.SPACELIFT_URL), () => "https://lovable.app.spacelift.io")
     const proxy = Option.getOrElse(optional(settings.WEBHOOK_PROXY_URL), () => "https://lov-webhook-proxy.lovable.app")
     const proxyRepos = Option.getOrElse(optional(settings.WEBHOOK_PROXY_REPOS), () => "lovablelabs/lovable")
+    const screenModel = Option.getOrElse(optional(settings.WAKE_SCREEN_MODEL), () => "opencode/jev-1.13-free")
+    const slash = screenModel.indexOf("/")
+
+    if (slash <= 0) {
+      return yield* Result.fail(new InvalidConfig({ setting: "WAKE_SCREEN_MODEL", problem: "is not provider/model" }))
+    }
 
     return {
       opencode: { url, password: Redacted.make(password) },
+      // Thresholds read off a replay of a week of wake-ups: about a third start a turn.
+      wakeGate: {
+        model: { providerID: screenModel.slice(0, slash), id: screenModel.slice(slash + 1) },
+        messages: 14,
+        actionable: 0.5,
+        known: 0.5,
+      },
       github: { token: Redacted.make(token) },
       signIns: {
         // The proxy admits Lovable staff, and learns who that is from the account's email.

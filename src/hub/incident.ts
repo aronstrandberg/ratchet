@@ -5,6 +5,7 @@ import { TaskId } from "../protocol/ids.ts"
 import { type IncidentCategory, IncidentFacts } from "../protocol/incident.ts"
 import type { Outcome, Relation } from "../protocol/resource.ts"
 import { Subscriber, attach, detach } from "./subscribers.ts"
+import type { Attention } from "./attention.ts"
 
 const subscribers = { subscribers: Schema.Array(Subscriber) }
 
@@ -104,18 +105,19 @@ export const changes = (before: IncidentState, after: IncidentState): ReadonlyAr
 const isEnd = Change.isAnyOf(["Ended"])
 
 /**
- * Whether a change should wake a session of a task with this relation to the incident.
+ * What a change asks of a session of a task with this relation to the incident, or null for nothing.
  *
- * A task that works on the incident hears every change. A task that waits hears only the end.
+ * A task that works on the incident acts on its end and has every other change screened. A task that waits
+ * hears only the end.
  */
-export const wakes = (relation: Relation, change: Change): boolean => {
+export const attention = (relation: Relation, change: Change): Attention | null => {
   switch (relation) {
     case "context":
-      return false
+      return null
     case "waits_on":
-      return isEnd(change)
+      return isEnd(change) ? "act" : null
     case "owns":
-      return true
+      return isEnd(change) ? "act" : "screen"
   }
 }
 

@@ -11,6 +11,7 @@ const wake: Wake = {
   queuedAt: 1_794_526_147_816,
   card: null,
   resume: true,
+  screen: false,
 }
 
 test("a wake-up sent again becomes the same message, and another wake-up a different one", async () => {

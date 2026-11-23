@@ -262,6 +262,7 @@ export const make = Effect.gen(function* () {
       queuedAt: closed.closedAt,
       card: null,
       resume: true,
+      screen: false,
     }
   }
 

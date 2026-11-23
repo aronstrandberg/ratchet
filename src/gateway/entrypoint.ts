@@ -10,6 +10,7 @@ import type * as Grant from "./grant.ts"
 import * as BuildReads from "./build-reads.ts"
 import type * as LiveReads from "./live-reads.ts"
 import * as OpenCode from "./opencode.ts"
+import * as WakeGate from "./wake-gate.ts"
 import * as ResourceReads from "./resource-reads.ts"
 import { type Services, runtime } from "./runtime.ts"
 import type * as SessionSync from "./session-sync.ts"
@@ -95,12 +96,15 @@ export class Gateway extends WorkerEntrypoint<Env> {
     )
   }
 
-  /** Puts a wake-up into its session and lets the session run. Sending the same wake-up again adds nothing. */
+  /**
+   * Puts a wake-up into its session, and starts a turn when it needs one. Sending the same wake-up again
+   * adds nothing.
+   */
   async wake(wake: typeof Wake.Encoded): Promise<void> {
     await this.#run(
       Effect.gen(function* () {
-        const opencode = yield* OpenCode.Service
-        yield* opencode.wake(yield* Schema.decodeEffect(Wake)(wake))
+        const gate = yield* WakeGate.Service
+        yield* gate.deliver(yield* Schema.decodeEffect(Wake)(wake))
       }),
     )
   }
