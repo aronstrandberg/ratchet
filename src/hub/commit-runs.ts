@@ -5,6 +5,7 @@ import { TaskId } from "../protocol/ids.ts"
 import type { Outcome, Relation } from "../protocol/resource.ts"
 import { CommitRunsFacts, Run } from "../protocol/runs.ts"
 import { Subscriber, attach, detach } from "./subscribers.ts"
+import type { Attention } from "./attention.ts"
 
 const subscribers = { subscribers: Schema.Array(Subscriber) }
 
@@ -184,13 +185,14 @@ export const changes = (before: CommitRunsState, after: CommitRunsState): Readon
 const isEnd = Change.isAnyOf(["Settled"])
 
 /**
- * Whether a change should wake a session of a task with this relation to the runs.
+ * What a change asks of a session of a task with this relation to the runs, or null for nothing.
  *
- * An owner hears a run wait for a person, fail, or end without applying, and hears it finish after that.
- * That every run is over wakes nobody: most runs apply on their own, and a session whose work is done has
- * nothing to do about it.
+ * An owner acts on a run that waits for a person, fails, or ends without applying, and notes one that
+ * finished after that. That every run is over asks nothing: most runs apply on their own, and a session
+ * whose work is done has nothing to do about it.
  */
-export const wakes = (relation: Relation, change: Change): boolean => relation === "owns" && !isEnd(change)
+export const attention = (relation: Relation, change: Change): Attention | null =>
+  relation !== "owns" || isEnd(change) ? null : Change.match(change, { RunFinished: () => "note" as const, RunWaits: () => "act" as const, RunFailed: () => "act" as const, RunDropped: () => "act" as const, Settled: () => null })
 
 const plan = (delta: typeof Delta.Type) =>
   delta === null ? "" : ` Its plan adds ${delta.add}, changes ${delta.change} and deletes ${delta.delete}.`

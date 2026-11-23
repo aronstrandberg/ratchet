@@ -205,7 +205,7 @@ const issue = (over: Partial<LinearIssueFacts> = {}): ResourceFacts =>
     },
   })
 
-test("the owner of a Linear issue hears another person's comment, and not its own or a move on the board", () =>
+test("a move on the board reaches the owner of a Linear issue without a turn, and another person's comment is screened", () =>
   run(
     Effect.gen(function* () {
       const { pullRequests: resources, outside } = yield* setUp("Move the export", issue())
@@ -215,7 +215,7 @@ test("the owner of a Linear issue hears another person's comment, and not its ow
         issue({ state: { name: "In Review", type: "started" }, comments: [{ id: "c1", author: "me" }] }),
       )
 
-      expect(quiet).toEqual({ changes: ["StateChanged"], woke: 0 })
+      expect(quiet).toEqual({ changes: ["StateChanged"], woke: 1 })
 
       const heard = yield* resources.observe(
         issue({
@@ -228,9 +228,11 @@ test("the owner of a Linear issue hears another person's comment, and not its ow
       )
 
       expect(heard).toEqual({ changes: ["Commented"], woke: 1 })
-      const [wake] = yield* outside.wakes
-      expect(wake?.text).toContain("Ratchet: Linear issue DX-1 changed.")
-      expect(wake?.text).toContain("- Jifeng commented.")
+      const [moved, commented] = yield* outside.wakes
+      expect([moved?.resume, moved?.screen]).toEqual([false, false])
+      expect([commented?.resume, commented?.screen]).toEqual([true, true])
+      expect(commented?.text).toContain("Ratchet: Linear issue DX-1 changed.")
+      expect(commented?.text).toContain("- Jifeng commented.")
     }),
   ))
 

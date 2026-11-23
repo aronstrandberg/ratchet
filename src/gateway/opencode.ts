@@ -81,12 +81,95 @@ export interface Interface {
    * Sending the same wake-up again adds nothing: OpenCode knows the message by its ID.
    */
   readonly wake: (wake: Wake) => Effect.Effect<void, OpenCodeUnavailable>
+  /** Whether a session is in a turn now. */
+  readonly running: (id: SessionId) => Effect.Effect<boolean, OpenCodeUnavailable>
+  /**
+   * A session's latest messages as lines a model can read, oldest first: what the user and Ratchet said,
+   * what the agent wrote, and each tool it called with the start of what the tool answered.
+   */
+  readonly recent: (id: SessionId, count: number) => Effect.Effect<ReadonlyArray<string>, OpenCodeUnavailable>
+  /**
+   * Asks a decision model how likely each statement is to be true of the evidence, and answers the
+   * probabilities by the questions' names. A question the model gives no answer to is left out.
+   */
+  readonly judge: (
+    model: ModelRef,
+    evidence: ReadonlyArray<string>,
+    questions: ReadonlyArray<{ readonly name: string; readonly instructions: string }>,
+  ) => Effect.Effect<ReadonlyMap<string, number>, OpenCodeUnavailable>
+}
+
+/** A model OpenCode serves, such as `opencode/jev-1.13-free`. */
+export interface ModelRef {
+  readonly providerID: string
+  readonly id: string
 }
 
 /** The gateway's connection to OpenCode. */
 export class Service extends Context.Service<Service, Interface>()("@ratchet/gateway/OpenCode") {}
 
 const encodeCard = Schema.encodeSync(Card)
+
+const Said = Schema.Struct({ type: Schema.Literal("text"), text: Schema.String })
+
+const Called = Schema.Struct({
+  type: Schema.Literal("tool"),
+  name: Schema.String,
+  state: Schema.optional(
+    Schema.Struct({
+      input: Schema.optional(Schema.Unknown),
+      content: Schema.optional(Schema.Array(Schema.Struct({ text: Schema.optional(Schema.String) }))),
+    }),
+  ),
+})
+
+/** Any other kind of part or message, which the screen does not read. */
+const Other = Schema.Struct({ type: Schema.String })
+
+const Spoken = Schema.Struct({ type: Schema.Literals(["user", "synthetic"]), text: Schema.String })
+
+const Written = Schema.Struct({ type: Schema.Literal("assistant"), content: Schema.Array(Schema.Union([Said, Called, Other])) })
+
+/** A message of a session, in the kinds the screen reads. */
+const Message = Schema.Union([Spoken, Written, Other])
+
+type Message = typeof Message.Type
+
+const clip = (text: string, most: number) => (text.length > most ? `${text.slice(0, most)}…` : text)
+
+/** One message of a session as lines a model can read. A message of another kind gives none. */
+export const linesOf = (message: Message): ReadonlyArray<string> => {
+  if ("text" in message) {
+    const who = message.type === "user" ? "user" : "ratchet or another program"
+
+    return [`[${who}] ${clip(message.text, 400)}`]
+  }
+
+  if (!("content" in message)) return []
+
+  return message.content.flatMap((part) => {
+    if ("text" in part) return part.text === "" ? [] : [`[assistant] ${clip(part.text, 500)}`]
+
+    if (!("name" in part)) return []
+    const answered = (part.state?.content ?? []).map((item) => item.text ?? "").join(" ")
+
+    return [`[tool ${part.name}] ${clip(JSON.stringify(part.state?.input ?? {}), 300)} -> ${clip(answered, 300)}`]
+  })
+}
+
+/** A page of a session's messages, in the kinds the screen reads. */
+export const Messages = Schema.Struct({ data: Schema.Array(Message) })
+
+const Answers = Schema.Struct({
+  data: Schema.Struct({
+    answers: Schema.Array(
+      Schema.Union([
+        Schema.Struct({ type: Schema.Literal("predicate"), name: Schema.String, probability: Schema.Number }),
+        Schema.Struct({ type: Schema.Literal("error"), name: Schema.String }),
+      ]),
+    ),
+  }),
+})
 
 const SessionPage = Schema.Struct({
   data: Schema.Array(SessionInfo),
@@ -426,6 +509,36 @@ export const make = (config: Config): Effect.Effect<Interface, never, HttpClient
       Effect.mapError(failed("wake")),
     )
 
+    const running = (id: SessionId) =>
+      getJson(Active, "/api/session/active").pipe(
+        Effect.map((active) => id in active.data),
+        Effect.mapError(failed("read running sessions")),
+      )
+
+    const recent = (id: SessionId, count: number) =>
+      getJson(Messages, `/api/session/${id}/message`, { limit: String(count), order: "desc" }).pipe(
+        Effect.map((page) => page.data.toReversed().flatMap(linesOf)),
+        Effect.mapError(failed("read messages")),
+      )
+
+    const judge: Interface["judge"] = (model, evidence, questions) =>
+      HttpClientRequest.post("/api/experimental/generate/decisions").pipe(
+        HttpClientRequest.bodyJsonUnsafe({
+          model,
+          input: evidence.map((text) => ({ type: "text", text })),
+          questions: questions.map(({ name, instructions }) => ({ type: "predicate", name, instructions })),
+        }),
+        http.execute,
+        Effect.flatMap(HttpClientResponse.schemaBodyJson(Answers)),
+        Effect.map(
+          (body) =>
+            new Map(
+              body.data.answers.flatMap((answer) => ("probability" in answer ? [[answer.name, answer.probability] as const] : [])),
+            ),
+        ),
+        Effect.mapError(failed("judge")),
+      )
+
     return Service.of({
       snapshot,
       facts,
@@ -433,6 +546,9 @@ export const make = (config: Config): Effect.Effect<Interface, never, HttpClient
       recordTask,
       fork,
       wake,
+      running,
+      recent,
+      judge,
     })
   })
 

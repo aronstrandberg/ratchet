@@ -13,12 +13,13 @@ import * as Linear from "./linear.ts"
 import * as OpenCode from "./opencode.ts"
 import * as SignIns from "./sign-ins.ts"
 import * as Spacelift from "./spacelift.ts"
+import * as WakeGate from "./wake-gate.ts"
 import * as WebhookProxy from "./webhook-proxy.ts"
 
 /** The gateway: its connections to OpenCode, GitHub, Linear, incident.io, Buildkite and Spacelift, its sign-ins, and its line to the hub. */
 const layer = (env: Env, config: Config.Gateway) =>
   Layer.mergeAll(
-    OpenCode.layer(config.opencode),
+    WakeGate.layerWithoutDependencies(config.wakeGate).pipe(Layer.provideMerge(OpenCode.layer(config.opencode))),
     Linear.layer({ url: config.signIns.linear.resource }),
     IncidentIo.layer({ url: config.signIns["incident-io"].resource }),
     BuildReads.layerWithoutDependencies,

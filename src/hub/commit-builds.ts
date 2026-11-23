@@ -5,6 +5,7 @@ import { Build, CommitBuildsFacts } from "../protocol/builds.ts"
 import { TaskId } from "../protocol/ids.ts"
 import type { Outcome, Relation } from "../protocol/resource.ts"
 import { Subscriber, attach, detach } from "./subscribers.ts"
+import type { Attention } from "./attention.ts"
 
 const subscribers = { subscribers: Schema.Array(Subscriber) }
 
@@ -176,15 +177,14 @@ export const changes = (before: CommitBuildsState, after: CommitBuildsState): Re
   return found
 }
 
-const isAboutFailure = Change.isAnyOf(["BuildFailed", "BuildRecovered"])
-
 /**
- * Whether a change should wake a session of a task with this relation to the builds.
+ * What a change asks of a session of a task with this relation to the builds, or null for nothing.
  *
- * An owner hears a build fail, and hears it pass after all. That every build is over wakes nobody: most
- * commits pass, and a session whose work is done has nothing to do about it.
+ * An owner acts on a failed build, and notes one that passed after all. That every build is over asks
+ * nothing: most commits pass, and a session whose work is done has nothing to do about it.
  */
-export const wakes = (relation: Relation, change: Change): boolean => relation === "owns" && isAboutFailure(change)
+export const attention = (relation: Relation, change: Change): Attention | null =>
+  relation !== "owns" ? null : Change.match(change, { BuildFailed: () => "act" as const, BuildRecovered: () => "note" as const, Settled: () => null })
 
 /** One line a session can read, for one change. */
 export const describe = (change: Change): string =>
