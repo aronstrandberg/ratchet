@@ -8,6 +8,8 @@ import * as Cells from "./cells.ts"
 import * as GatewayBinding from "./gateway-binding.ts"
 import { CommitBuildsEntity, commitBuildsMachine } from "./commit-builds.ts"
 import { CommitRunsEntity, commitRunsMachine } from "./commit-runs.ts"
+import { DecisionEntity, decisionMachine } from "./decision.ts"
+import * as Decisions from "./decisions.ts"
 import { IncidentEntity, incidentMachine } from "./incident.ts"
 import * as Index from "./index-store.ts"
 import { LinearIssueEntity, linearIssueMachine } from "./linear-issue.ts"
@@ -18,6 +20,7 @@ import { SessionEntity, sessionMachine } from "./session.ts"
 import { TaskEntity, taskMachine } from "./task.ts"
 import * as Tasks from "./tasks.ts"
 import * as WakePolicy from "./wake-policy.ts"
+import * as Wakes from "./wakes.ts"
 
 const journal = { persistence: { strategy: "journal" } } as const
 
@@ -31,6 +34,7 @@ const cells = (env: Env, config: Config.Hub) =>
     EntityMachine.layer(IncidentEntity, incidentMachine, journal),
     EntityMachine.layer(CommitBuildsEntity, commitBuildsMachine, journal),
     EntityMachine.layer(CommitRunsEntity, commitRunsMachine, journal),
+    EntityMachine.layer(DecisionEntity, decisionMachine, journal),
   ).pipe(
     Layer.provide(
       Persistence.layerSqlite(
@@ -42,6 +46,7 @@ const cells = (env: Env, config: Config.Hub) =>
           Incident: Persistence.journaled(incidentMachine),
           CommitBuilds: Persistence.journaled(commitBuildsMachine),
           CommitRuns: Persistence.journaled(commitRunsMachine),
+          Decision: Persistence.journaled(decisionMachine),
         },
         CloudflareCluster.DurableObjectSqlClient.orDie,
       ),
@@ -49,7 +54,7 @@ const cells = (env: Env, config: Config.Hub) =>
     Layer.provideMerge(Telemetry.layer(config.tracing, "ratchet-hub")),
     Layer.provideMerge(
       CloudflareCluster.layer({
-        entities: [TaskEntity, SessionEntity, PullRequestEntity, LinearIssueEntity, IncidentEntity, CommitBuildsEntity, CommitRunsEntity],
+        entities: [TaskEntity, SessionEntity, PullRequestEntity, LinearIssueEntity, IncidentEntity, CommitBuildsEntity, CommitRunsEntity, DecisionEntity],
         entityNamespace: env.CLUSTER_ENTITY,
         workflowNamespace: env.CLUSTER_WORKFLOW,
         queueNamespace: env.CLUSTER_QUEUE,
@@ -60,8 +65,8 @@ const cells = (env: Env, config: Config.Hub) =>
 
 /** The hub: its application services on the cells, the D1 index and the gateway's binding. */
 const layer = (env: Env, config: Config.Hub) =>
-  Resources.layerWithoutDependencies.pipe(
-    Layer.provideMerge(Tasks.layerWithoutDependencies),
+  Layer.mergeAll(Resources.layerWithoutDependencies, Decisions.layerWithoutDependencies).pipe(
+    Layer.provideMerge(Layer.mergeAll(Tasks.layerWithoutDependencies, Wakes.layerWithoutDependencies)),
     Layer.provideMerge(Cells.layerWithoutDependencies),
     Layer.provideMerge(
       Layer.mergeAll(

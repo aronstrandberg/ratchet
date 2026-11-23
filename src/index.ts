@@ -1,4 +1,6 @@
 import type { Env } from "./env.ts"
+import { Result, Schema } from "effect"
+import { Answer } from "./protocol/decision.ts"
 import * as Mcp from "./hub/mcp.ts"
 import { buildRoute } from "./gateway/build-route.ts"
 
@@ -21,8 +23,18 @@ export { WebhookStream } from "./gateway/webhook-stream.ts"
 
 export { Hub } from "./hub/entrypoint.ts"
 
+const AnswerForm = Schema.Struct({
+  option: Schema.optional(Schema.String),
+  text: Schema.optional(Schema.String),
+  note: Schema.optional(Schema.String),
+})
+
+const decodeAnswerForm = Schema.decodeUnknownResult(AnswerForm)
+
 const route = async (request: Request, env: Env): Promise<Response> => {
   switch (new URL(request.url).pathname) {
+    case "/inbox":
+      return Response.json(await env.HUB.inbox())
     case "/tree":
       return Response.json(await env.HUB.tree())
     case "/mcp":
@@ -40,8 +52,38 @@ const route = async (request: Request, env: Env): Promise<Response> => {
     case "/gateway/sign-ins":
       return Response.json(await env.GATEWAY.signIns())
     default:
-      return signIn(request, env)
+      return new URL(request.url).pathname.startsWith("/decisions/") ? answer(request, env) : signIn(request, env)
   }
+}
+
+/**
+ * `POST /decisions/<id>/answer`, as JSON or as a form: `option` with an option's label, or `text` with an answer
+ * in my own words, and `note`.
+ */
+const answer = async (request: Request, env: Env): Promise<Response> => {
+  const [, id] = /^\/decisions\/([^/]+)\/answer$/.exec(new URL(request.url).pathname) ?? []
+
+  if (id === undefined || request.method !== "POST") return new Response("not found\n", { status: 404 })
+
+  const json = (request.headers.get("content-type") ?? "").includes("application/json")
+  const sent = json ? await request.json() : Object.fromEntries(await request.formData())
+  const fields = decodeAnswerForm(sent)
+
+  if (Result.isFailure(fields)) return new Response(`${fields.failure.message}\n`, { status: 400 })
+  const { option = "", text = "", note = "" } = fields.success
+
+  if (option.trim() === "" && text.trim() === "") {
+    return new Response("give an option or an answer of your own\n", { status: 400 })
+  }
+
+  const given =
+    option.trim() === ""
+      ? Answer.cases.Wrote.make({ text: text.trim() })
+      : Answer.cases.Chose.make({ option: option.trim() })
+
+  await env.HUB.answer({ id, answer: Schema.encodeSync(Answer)(given), note: note.trim() })
+
+  return new Response(null, { status: 204 })
 }
 
 /** The two steps of a sign-in to one system: `/gateway/sign-ins/<system>/login` and `…/callback`. */

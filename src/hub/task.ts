@@ -1,6 +1,7 @@
 import { Effect, Schema } from "effect"
 import { Event, Machine, State } from "effect-machine"
 import { toEntity } from "effect-machine/cluster"
+import { DecisionId } from "../protocol/decision.ts"
 import { SessionId, TaskId } from "../protocol/ids.ts"
 import { Outcome, Relation, ResourceKey, WorkStatus } from "../protocol/resource.ts"
 import { Question } from "../protocol/session.ts"
@@ -30,6 +31,14 @@ const Attachment = Schema.Struct({
   ended: Schema.NullOr(Outcome).pipe(Schema.withDecodingDefaultKey(Effect.succeed(null))),
 })
 
+/** A decision of the task that has not closed. */
+const OpenDecision = Schema.Struct({
+  id: DecisionId,
+  question: Schema.String,
+  /** Whether the session waits for the answer. Otherwise it acts on the recommended option meanwhile. */
+  waits: Schema.Boolean,
+})
+
 /** A resource a task follows, as the task holds it. */
 export type Attachment = typeof Attachment.Type
 
@@ -44,13 +53,15 @@ const details = {
   attachments: Schema.Array(Attachment),
   /** Messages for the task's sessions that have not reached them yet. */
   outbox: Schema.Array(Wake),
+  decisions: Schema.Array(OpenDecision).pipe(Schema.withDecodingDefaultKey(Effect.succeed([]))),
 }
 
 type Details = Schema.Struct.Type<typeof details>
 
 /**
  * A task's state. The tag is what the board shows, and `settle` derives it from the details:
- * an open question beats running work, and work beats a subagent that only watches.
+ * an open question, or a decision the session waits on, beats running work, and work beats a subagent that
+ * only watches.
  */
 export const TaskState = State({
   Unborn: {},
@@ -113,6 +124,8 @@ export const TaskEvent = Event({
     at: Schema.Number.pipe(Schema.withDecodingDefaultKey(Effect.succeed(0))),
   },
   WakeDelivered: { id: Schema.String },
+  DecisionOpened: OpenDecision.fields,
+  DecisionClosed: { id: DecisionId },
 })
 
 const open = [TaskState.NeedsMe, TaskState.Working, TaskState.Watching, TaskState.Idle] as const
@@ -126,6 +139,7 @@ const detailsOf = (state: Details): Details => ({
   questions: state.questions,
   attachments: state.attachments,
   outbox: state.outbox,
+  decisions: state.decisions,
 })
 
 const settle = (details: Details) => {
@@ -133,7 +147,9 @@ const settle = (details: Details) => {
     (attachment) => attachment.ended === null && attachment.status === "waiting-user",
   )
 
-  if (details.questions.length > 0 || waitsOnMe) return TaskState.NeedsMe(details)
+  const decided = details.decisions.some((decision) => decision.waits)
+
+  if (details.questions.length > 0 || waitsOnMe || decided) return TaskState.NeedsMe(details)
 
   if (details.running.length > 0 || details.subagents.some((s) => s.kind === "working")) {
     return TaskState.Working(details)
@@ -162,6 +178,7 @@ export const taskMachine = Machine.make({
       questions: [],
       attachments: [],
       outbox: [],
+      decisions: [],
     }),
   )
   .on(open, TaskEvent.Observed, ({ state, event }) => {
@@ -268,6 +285,18 @@ export const taskMachine = Machine.make({
   )
   .on(open, TaskEvent.WakeDelivered, ({ state, event }) =>
     settle({ ...detailsOf(state), outbox: without(state.outbox, (w) => w.id === event.id) }),
+  )
+  .on(open, TaskEvent.DecisionOpened, ({ state, event }) =>
+    settle({
+      ...detailsOf(state),
+      decisions: [
+        ...without(state.decisions, (d) => d.id === event.id),
+        { id: event.id, question: event.question, waits: event.waits },
+      ],
+    }),
+  )
+  .on(open, TaskEvent.DecisionClosed, ({ state, event }) =>
+    settle({ ...detailsOf(state), decisions: without(state.decisions, (d) => d.id === event.id) }),
   )
 
 /** A task as a cell: one per task ID. */

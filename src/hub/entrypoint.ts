@@ -2,17 +2,21 @@ import { WorkerEntrypoint } from "cloudflare:workers"
 import { Effect, Schema } from "effect"
 import type { Env } from "../env.ts"
 import { forBinding } from "../failure.ts"
+import { Answer, DecisionId } from "../protocol/decision.ts"
 import { ResourceFacts, ResourceRef } from "../protocol/resource.ts"
 import { Binding, SessionFact } from "../protocol/session.ts"
 import { type Services, runtime } from "./cluster.ts"
+import * as Decisions from "./decisions.ts"
 import * as Index from "./index-store.ts"
 import * as Resources from "./resources.ts"
 import * as Tasks from "./tasks.ts"
+import * as Wakes from "./wakes.ts"
 
 const decodeFacts = Schema.decodeEffect(Schema.Array(SessionFact))
 const encodeBindings = Schema.encodeEffect(Schema.Array(Binding))
 const decodeObservation = Schema.decodeEffect(ResourceFacts)
 const encodeRefs = Schema.encodeEffect(Schema.Array(ResourceRef))
+const decodeAnswer = Schema.decodeUnknownEffect(Schema.Struct({ id: DecisionId, answer: Answer, note: Schema.String }))
 
 /**
  * The hub as the gateway and the Worker's routes call it.
@@ -53,7 +57,7 @@ export class Hub extends WorkerEntrypoint<Env> {
 
   /** Tries again to deliver every wake-up that has not reached its session. */
   async deliverWakes(): Promise<number> {
-    return this.#run(Effect.flatMap(Resources.Service, (resources) => resources.deliverPending))
+    return this.#run(Effect.flatMap(Wakes.Service, (wakes) => wakes.deliverPending))
   }
 
   /** The resources worth reading again: someone follows them and they have not ended. */
@@ -64,6 +68,22 @@ export class Hub extends WorkerEntrypoint<Env> {
   /** Every resource the hub knows, the latest change first. */
   async resources(): Promise<ReadonlyArray<Index.ResourceRow>> {
     return this.#run(Effect.flatMap(Index.Service, (index) => index.resources("all")))
+  }
+
+  /** What waits on me, and what was decided without me. */
+  async inbox(): Promise<Index.Inbox> {
+    return this.#run(Effect.flatMap(Index.Service, (index) => index.inbox))
+  }
+
+  /** Answers an open decision, as I gave the answer in the inbox. */
+  async answer(input: { readonly id: string; readonly answer: typeof Answer.Encoded; readonly note: string }): Promise<void> {
+    return this.#run(
+      Effect.gen(function* () {
+        const { id, answer, note } = yield* decodeAnswer(input)
+
+        yield* (yield* Decisions.Service).answer(id, answer, note)
+      }).pipe(Effect.withSpan("Hub.answer")),
+    )
   }
 
   /** Every task as a forest. */

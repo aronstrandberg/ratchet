@@ -1,9 +1,11 @@
 import { Clock, Context, Effect, Layer, Ref, Schema } from "effect"
 import { causeText } from "../failure.ts"
-import { TaskId } from "../protocol/ids.ts"
+import { DecisionId, DecisionKind, DecisionSpec, Ending } from "../protocol/decision.ts"
+import { SessionId, TaskId } from "../protocol/ids.ts"
 import { type Outcome, ResourceKey } from "../protocol/resource.ts"
 import * as CommitBuilds from "./commit-builds.ts"
 import * as CommitRuns from "./commit-runs.ts"
+import { type DecisionState, isOpen, isUnraised } from "./decision.ts"
 import * as Incident from "./incident.ts"
 import * as LinearIssue from "./linear-issue.ts"
 import { PullRequestState, failedChecks, outcomeOf } from "./pull-request.ts"
@@ -38,7 +40,15 @@ const TaskDetail = Schema.Struct({
   sessions: Schema.Array(Schema.String),
   running: Schema.Array(Schema.String),
   subagents: Schema.Array(Schema.Struct({ session: Schema.String, kind: Schema.String })),
-  questions: Schema.Array(Schema.Struct({ id: Schema.String, kind: Schema.String, title: Schema.String })),
+  questions: Schema.Array(
+    Schema.Struct({
+      id: Schema.String,
+      kind: Schema.String,
+      title: Schema.String,
+      /** The session that asks. Rows written before the inbox existed lack it. */
+      session: Schema.String.pipe(Schema.withDecodingDefaultKey(Effect.succeed(""))),
+    }),
+  ),
   // Rows of tasks that never followed a resource lack the next two keys.
   attachments: Schema.Array(
     Schema.Struct({
@@ -121,6 +131,60 @@ const ResourceRecord = Schema.Struct({
 /** A resource as the board lists it. */
 export type ResourceRow = typeof ResourceRecord.Type
 
+/** What a decision row holds beside its own columns, stored as JSON. */
+const DecisionDetail = Schema.Struct({
+  spec: DecisionSpec,
+  ending: Schema.NullOr(Ending),
+  raisedAt: Schema.Number,
+  closedAt: Schema.NullOr(Schema.Number),
+})
+
+const DecisionDetailJson = Schema.fromJsonString(DecisionDetail)
+
+const DecisionRecord = Schema.Struct({
+  id: DecisionId,
+  task: TaskId,
+  /** The task's title, or empty when the task has no row. */
+  taskTitle: Schema.String,
+  session: SessionId,
+  state: Schema.Literals(["Open", "Closed"]),
+  detail: DecisionDetailJson,
+})
+
+/** A decision as the inbox lists it. */
+export interface DecisionRow extends Schema.Schema.Type<typeof DecisionDetail> {
+  readonly id: DecisionId
+  readonly task: TaskId
+  readonly taskTitle: string
+  readonly session: SessionId
+  readonly state: "Open" | "Closed"
+}
+
+/** A question form or a permission request a session waits on, as the inbox lists it. */
+export interface QuestionRow {
+  readonly id: string
+  readonly kind: string
+  readonly title: string
+  readonly session: string
+  readonly task: TaskId
+  readonly taskTitle: string
+}
+
+/** What waits on me, and what was decided without me. */
+export interface Inbox {
+  /** Open decisions that a session waits on, the oldest first. */
+  readonly waiting: ReadonlyArray<DecisionRow>
+  /** Question forms and permission requests, by task. */
+  readonly questions: ReadonlyArray<QuestionRow>
+  /** Open decisions whose recommended option the session acts on, the oldest first. */
+  readonly defaulted: ReadonlyArray<DecisionRow>
+  /** The latest closed decisions, the latest first. */
+  readonly closed: ReadonlyArray<DecisionRow>
+}
+
+/** How many closed decisions the inbox lists. */
+const closedShown = 20
+
 /** The read model of the hub: tasks and resources as rows the board can list and query. */
 export interface Interface {
   /** Writes a task's row. A task that does not exist yet has no row. */
@@ -141,6 +205,9 @@ export interface Interface {
   readonly resources: (which: "all" | "watched") => Effect.Effect<ReadonlyArray<ResourceRow>, IndexError>
   /** The tasks that hold wake-ups no session has received. */
   readonly tasksWithUndelivered: Effect.Effect<ReadonlyArray<TaskId>, IndexError>
+  /** Writes a decision's row. A decision that was never raised has no row. */
+  readonly putDecision: (id: DecisionId, state: DecisionState) => Effect.Effect<void, IndexError>
+  readonly inbox: Effect.Effect<Inbox, IndexError>
 }
 
 /** The hub's read model. */
@@ -152,6 +219,7 @@ const tables = [
   "CREATE TABLE IF NOT EXISTS resource (key TEXT PRIMARY KEY, kind TEXT NOT NULL, state TEXT NOT NULL, title TEXT NOT NULL, detail TEXT NOT NULL, watched INTEGER NOT NULL, updated_at INTEGER NOT NULL)",
   // Pull requests had a table of their own before other kinds of resource existed. Its rows are copied once.
   "INSERT OR IGNORE INTO resource (key, kind, state, title, detail, watched, updated_at) SELECT key, 'pull_request', state, title, detail, watched, updated_at FROM pull_request",
+  "CREATE TABLE IF NOT EXISTS decision (id TEXT PRIMARY KEY, task TEXT NOT NULL, session TEXT NOT NULL, state TEXT NOT NULL, waits INTEGER NOT NULL, detail TEXT NOT NULL, raised_at INTEGER NOT NULL, updated_at INTEGER NOT NULL)",
 ]
 
 /** A resource's row before it is stored. */
@@ -198,7 +266,7 @@ export const make = (database: Database): Effect.Effect<Interface> =>
         sessions: state.sessions,
         running: state.running,
         subagents: state.subagents.map(({ session, kind }) => ({ session, kind })),
-        questions: state.questions.map(({ id, kind, title }) => ({ id, kind, title })),
+        questions: state.questions.map(({ id, kind, title, session }) => ({ id, kind, title, session })),
         attachments: state.attachments.map(({ resource, relation, status, note, ended }) => ({
           resource,
           relation,
@@ -382,7 +450,65 @@ export const make = (database: Database): Effect.Effect<Interface> =>
       Effect.withSpan("Index.tasksWithUndelivered"),
     )
 
+    const putDecision = Effect.fn("Index.putDecision")(function* (id: DecisionId, state: DecisionState) {
+      if (isUnraised(state)) return
+      const closed = isOpen(state) ? null : state
+
+      const detail = yield* Schema.encodeEffect(DecisionDetailJson)({
+        spec: state.spec,
+        ending: closed?.ending ?? null,
+        raisedAt: state.raisedAt,
+        closedAt: closed?.closedAt ?? null,
+      }).pipe(Effect.mapError(failed("put decision")))
+
+      const now = yield* Clock.currentTimeMillis
+      const waits = DecisionKind.guards.Waits(state.spec.kind) ? 1 : 0
+      yield* run("put decision", () =>
+        database.run(
+          `INSERT INTO decision (id, task, session, state, waits, detail, raised_at, updated_at) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)
+           ON CONFLICT (id) DO UPDATE SET state = excluded.state, detail = excluded.detail, updated_at = excluded.updated_at`,
+          [id, state.task, state.session, state._tag, waits, detail, state.raisedAt, now],
+        ),
+      )
+    })
+
+    const decisionRows = (where: string) =>
+      run("decisions", () =>
+        database.all(
+          `SELECT d.id, d.task, coalesce(t.title, '') AS taskTitle, d.session, d.state, d.detail
+           FROM decision d LEFT JOIN task t ON t.id = d.task ${where}`,
+        ),
+      ).pipe(
+        Effect.flatMap((rows) =>
+          Schema.decodeUnknownEffect(Schema.Array(DecisionRecord))(rows).pipe(Effect.mapError(failed("decisions"))),
+        ),
+        Effect.map((records) => records.map(({ detail, ...row }): DecisionRow => ({ ...row, ...detail }))),
+      )
+
+    const inbox = Effect.gen(function* () {
+      const asking = yield* run("questions", () =>
+        database.all(
+          "SELECT id, title, detail FROM task WHERE json_array_length(detail, '$.questions') > 0 ORDER BY updated_at",
+        ),
+      )
+
+      const tasks = yield* Schema.decodeUnknownEffect(Schema.Array(Schema.Struct({ id: TaskId, title: Schema.String, detail: TaskDetailJson })))(asking).pipe(
+        Effect.mapError(failed("questions")),
+      )
+
+      return {
+        waiting: yield* decisionRows("WHERE d.state = 'Open' AND d.waits = 1 ORDER BY d.raised_at"),
+        questions: tasks.flatMap((task) =>
+          task.detail.questions.map((question) => ({ ...question, task: task.id, taskTitle: task.title })),
+        ),
+        defaulted: yield* decisionRows("WHERE d.state = 'Open' AND d.waits = 0 ORDER BY d.raised_at"),
+        closed: yield* decisionRows(`WHERE d.state = 'Closed' ORDER BY d.updated_at DESC LIMIT ${closedShown}`),
+      }
+    }).pipe(Effect.withSpan("Index.inbox"))
+
     return Service.of({
+      putDecision,
+      inbox,
       putTask,
       putPullRequest,
       putLinearIssue,

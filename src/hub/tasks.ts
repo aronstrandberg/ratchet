@@ -1,4 +1,5 @@
 import { Context, Effect, Layer, Option, Random, Schema } from "effect"
+import { DecisionId } from "../protocol/decision.ts"
 import { SessionId, TaskId } from "../protocol/ids.ts"
 import { Binding, SessionFact, SessionOrigin } from "../protocol/session.ts"
 import * as Cells from "./cells.ts"
@@ -17,6 +18,8 @@ export const TaskView = Schema.Struct({
   subagents: Schema.Array(Schema.Struct({ session: SessionId, kind: SubagentKind })),
   /** The titles of the questions the task waits on me for. */
   questions: Schema.Array(Schema.String),
+  /** The task's decisions that have not closed. `waits` marks one the session waits on. */
+  decisions: Schema.Array(Schema.Struct({ id: DecisionId, question: Schema.String, waits: Schema.Boolean })),
 })
 
 export type TaskView = typeof TaskView.Type
@@ -105,6 +108,7 @@ const view = (id: TaskId, state: LiveTask): TaskView => ({
   sessions: state.sessions,
   subagents: state.subagents.map(({ session, kind }) => ({ session, kind })),
   questions: state.questions.map((question) => question.title),
+  decisions: state.decisions,
 })
 
 const sameSet = (a: ReadonlyArray<string>, b: ReadonlyArray<string>) =>
