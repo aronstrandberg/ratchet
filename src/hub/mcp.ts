@@ -138,7 +138,7 @@ const SubagentDeclare = Tool.make("subagent_declare", {
 
 const DecisionRaise = Tool.make("decision_raise", {
   description:
-    "Ask the user to choose, with your recommendation, on this session's current task. The user answers in Ratchet's inbox, and Ratchet messages this session with the answer. The answer's meanwhile field says what to do until then.",
+    "Ask the user to choose, with your recommendation, on this session's current task. The user answers in this session or in their coordinator's session. The answer's meanwhile field says what to do until then, and its wakes field whether Ratchet will message this session with an answer given elsewhere; when it is false, ask the user to answer here.",
   parameters: Schema.Struct({
     question: DecisionSpec.fields.question.annotate({ description: "The question, in at most 140 characters." }),
     brief: DecisionSpec.fields.brief.annotate({

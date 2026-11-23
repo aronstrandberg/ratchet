@@ -71,7 +71,7 @@ const route = async (request: Request, env: Env): Promise<Response> => {
 }
 
 /**
- * `POST /decisions/<id>/answer`, as JSON or as a form: `option` with an option's label, or `text` with an answer
+ * `POST /decisions/<id>/answer`, as JSON: `option` with an option's label, or `text` with an answer
  * in my own words, and `note`.
  */
 const answer = async (request: Request, env: Env): Promise<Response> => {
@@ -125,14 +125,15 @@ const signIn = async (request: Request, env: Env): Promise<Response> => {
   return new Response(`Ratchet is signed in to ${system}. You can close this page.\n`)
 }
 
-/**
- * The Worker's routes: the board's reads, the sessions' tools and the gateway's status.
- *
- * A route that fails answers 503 with the failure's message, which names no secret.
- */
 /** Whether a request names this machine. A page whose name resolves here by a trick names its own host. */
 const loopback = (request: Request) => /^(127\.0\.0\.1|localhost|\[::1\])(:\d+)?$/.test(request.headers.get("host") ?? "")
 
+/**
+ * The Worker's routes: the board's reads, the sessions' tools and the gateway's status, served only to a
+ * request that names this machine.
+ *
+ * A route that fails answers 503 with the failure's message, which names no secret.
+ */
 export default {
   fetch: (request: Request, env: Env): Promise<Response> =>
     (loopback(request) ? route(request, env) : Promise.resolve(new Response("forbidden\n", { status: 403 }))).catch((cause: unknown) =>

@@ -1,7 +1,7 @@
 import { Clock, Context, Effect, Layer, Option, Schema } from "effect"
 import { Card } from "../protocol/card.ts"
 import { Answer, AnsweredIn, DecisionId, DecisionKind, DecisionSpec, Ending, confirmsDefault, problemOf } from "../protocol/decision.ts"
-import { SessionId } from "../protocol/ids.ts"
+import { SessionId, type TaskId } from "../protocol/ids.ts"
 import type { Wake } from "../protocol/wake.ts"
 import * as Cells from "./cells.ts"
 import { seatedSession } from "./coordinator.ts"
@@ -176,14 +176,14 @@ const encodeEnding = (ending: Ending) => JSON.stringify(Schema.encodeSync(Ending
 const encodeSpec = Schema.encodeSync(DecisionSpec)
 
 /**
- * A decision's ID: `dec_` and 24 hex digits of a hash of the session, the spec and what it supersedes. A
- * raise sent again after a failure names the same decision, so it does not raise a second one.
+ * A decision's ID: `dec_` and 24 hex digits of a hash of the session, its task, the spec and what it
+ * supersedes. A raise sent again after a failure names the same decision, so it does not raise a second one.
  */
-const decisionIdOf = (session: SessionId, spec: DecisionSpec, supersedes: Option.Option<DecisionId>) =>
+const decisionIdOf = (session: SessionId, task: TaskId, spec: DecisionSpec, supersedes: Option.Option<DecisionId>) =>
   Effect.promise(() =>
     crypto.subtle.digest(
       "SHA-256",
-      new TextEncoder().encode(JSON.stringify([session, encodeSpec(spec), Option.getOrNull(supersedes)])),
+      new TextEncoder().encode(JSON.stringify([session, task, encodeSpec(spec), Option.getOrNull(supersedes)])),
     ),
   ).pipe(
     Effect.map((digest) =>
@@ -300,16 +300,15 @@ export const make = Effect.gen(function* () {
   })
 
   /**
-   * Closes a decision. Of two calls that close it at once, the cell keeps the first, and the second learns
-   * that it lost.
+   * Closes a decision. Of two calls that close it differently at once, the cell keeps the first, and the
+   * second learns that it lost. A call that closes it the same way again finishes what the first left undone.
    */
   const end = Effect.fn("Decisions.end")(function* (id: DecisionId, ending: Ending) {
-    const at = yield* Clock.currentTimeMillis
-    const closed = yield* cells.sendDecision(id, DecisionEvent.Closed({ ending, at }))
+    const closed = yield* cells.sendDecision(id, DecisionEvent.Closed({ ending, at: yield* Clock.currentTimeMillis }))
 
     if (isUnraised(closed) || isOpen(closed)) return yield* new UnknownDecision({ id })
 
-    if (closed.closedAt !== at || encodeEnding(closed.ending) !== encodeEnding(ending)) {
+    if (encodeEnding(closed.ending) !== encodeEnding(ending)) {
       return yield* new DecisionClosed({ id, ending: closed.ending })
     }
 
@@ -340,7 +339,7 @@ export const make = Effect.gen(function* () {
       if (old.task !== task) return yield* new NotADecisionOfSession({ id: supersedes.value })
     }
 
-    const id = yield* decisionIdOf(session, spec, supersedes)
+    const id = yield* decisionIdOf(session, task, spec, supersedes)
     const at = yield* Clock.currentTimeMillis
     const state = yield* cells.sendDecision(id, DecisionEvent.Raised({ spec, task, session, at }))
 
@@ -348,7 +347,7 @@ export const make = Effect.gen(function* () {
 
     if (!isOpen(state)) {
       return yield* new InvalidDecision({
-        problem: `it repeats decision ${id}, which has closed (${state.ending._tag}). Read its answer, or ask something else`,
+        problem: `it repeats decision ${id} word for word, which has closed (${state.ending._tag}). To ask again, change the brief to say what changed since`,
       })
     }
 
