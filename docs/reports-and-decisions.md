@@ -145,7 +145,7 @@ client without the plugin.
 | Route | Does |
 | --- | --- |
 | `GET /inbox` | What waits on me as JSON: `waits` decisions, then question forms and permission requests (titles only), then the decisions that took their default. Each item names its task. Built |
-| `POST /decisions/<id>/answer` | An option or a written answer, and a note. Built |
+| `POST /decisions/<id>/answer` | An option or a written answer, and a note, as JSON. Only requests to the loopback address are served. Built |
 | `GET /` | A page over these routes. A draft, kept apart |
 | `POST /sessions/<id>/forms/<form>/reply` | A form's answer, passed to OpenCode |
 | `POST /sessions/<id>/permissions/<request>/reply` | Allow once, allow always or reject, passed to OpenCode |

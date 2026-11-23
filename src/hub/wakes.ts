@@ -20,6 +20,11 @@ export interface Message {
   readonly card?: Card
   /** Whether the message starts a turn. It does unless this says otherwise. */
   readonly resume?: boolean
+  /**
+   * When the message was queued, in milliseconds since the epoch: now unless given. A message sent again
+   * after a failure gives the same time, so OpenCode knows it as the same message.
+   */
+  readonly at?: number
 }
 
 type Failure = Cells.CellUnavailable | Index.IndexError
@@ -31,8 +36,12 @@ export interface Interface {
    * session. A session the wake policy leaves out gets no message.
    */
   readonly send: (task: TaskId, message: Message) => Effect.Effect<number, Failure>
+  /** Delivers the messages a task holds, and answers how many reached their session. */
+  readonly deliver: (task: TaskId) => Effect.Effect<number, Failure>
   /** Tries again to deliver every message that has not reached its session, and answers how many did. */
   readonly deliverPending: Effect.Effect<number, Failure>
+  /** Whether the wake policy lets Ratchet put a message into the session. */
+  readonly admits: (session: SessionId) => boolean
 }
 
 /** The hub's messages to sessions. */
@@ -65,7 +74,7 @@ export const make = Effect.gen(function* () {
 
   const send = Effect.fn("Wakes.send")(function* (task: TaskId, message: Message) {
     if (!WakePolicy.allows(policy, message.session)) return 0
-    const at = yield* Clock.currentTimeMillis
+    const at = message.at ?? (yield* Clock.currentTimeMillis)
     yield* cells.sendTask(
       task,
       TaskEvent.WakeQueued({
@@ -89,7 +98,7 @@ export const make = Effect.gen(function* () {
     return woke
   }).pipe(Effect.withSpan("Wakes.deliverPending"))
 
-  return Service.of({ send, deliverPending })
+  return Service.of({ send, deliver, deliverPending, admits: (session) => WakePolicy.allows(policy, session) })
 })
 
 /** The messages, still in need of what they are built on. */

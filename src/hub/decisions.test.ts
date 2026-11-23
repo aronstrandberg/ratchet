@@ -1,5 +1,5 @@
 import { expect, test } from "bun:test"
-import { Effect, Option } from "effect"
+import { Effect, Option, Result } from "effect"
 import { Answer, DecisionKind, type DecisionSpec } from "../protocol/decision.ts"
 import { SessionId } from "../protocol/ids.ts"
 import { SessionFact, SessionOrigin } from "../protocol/session.ts"
@@ -146,7 +146,12 @@ test("the coordinator hears of a decision without a turn, and its answer wakes t
           questions: [],
         }),
       ])
-      yield* decisions.seat(coordinator)
+      yield* decisions.seat(coordinator, false)
+      expect((yield* Effect.flip(decisions.seat(session, false)))._tag).toBe("SeatTaken")
+      const own = yield* decisions.raise(coordinator, reversible, Option.none())
+      const chooseOwn = decisions.answerAsCoordinator(coordinator, own.decision, Answer.cases.Chose.make({ option: "golink" }), "")
+      expect((yield* Effect.flip(chooseOwn))._tag).toBe("OwnDecision")
+      yield* decisions.close(coordinator, own.decision, Option.none(), "Not needed.")
       const raised = yield* decisions.raise(session, waits, Option.none())
       const chose = Answer.cases.Chose.make({ option: "golink" })
 
@@ -157,12 +162,37 @@ test("the coordinator hears of a decision without a turn, and its answer wakes t
       yield* decisions.answerAsCoordinator(coordinator, raised.decision, chose, "")
       const wakes = yield* outside.wakes
 
-      expect(wakes.map((wake) => [wake.session, wake.id, wake.resume, wake.card === null ? null : (wake.card.ending?._tag ?? "open")])).toEqual([
+      expect(wakes.slice(2).map((wake) => [wake.session, wake.id, wake.resume, wake.card === null ? null : (wake.card.ending?._tag ?? "open")])).toEqual([
         [coordinator, `${raised.decision}:opened`, false, "open"],
-        [coordinator, `${raised.decision}:closed`, false, "Answered"],
         [session, `${raised.decision}:answer`, true, null],
+        [coordinator, `${raised.decision}:closed`, false, "Answered"],
       ])
-      expect(wakes[0]?.text).toContain("[The queue](https://example.com/q) waits 9 minutes.")
-      expect(wakes[0]?.text).toContain("1. **ci-amd64** (recommended): Shorter queues at the peak.")
+      expect(wakes[2]?.text).toContain("[The queue](https://example.com/q) waits 9 minutes.")
+      expect(wakes[2]?.text).toContain("1. **ci-amd64** (recommended): Shorter queues at the peak.")
+    }),
+  ))
+
+test("a raise sent again names the same decision, and of two answers at once only the first is taken", () =>
+  run(
+    Effect.gen(function* () {
+      const { decisions, outside } = yield* setUp
+      const first = yield* decisions.raise(session, waits, Option.none())
+      const again = yield* decisions.raise(session, waits, Option.none())
+
+      expect(again.decision).toBe(first.decision)
+
+      const answers = yield* Effect.all(
+        [
+          Effect.result(decisions.answer(first.decision, Answer.cases.Chose.make({ option: "golink" }), "", "inbox")),
+          Effect.result(decisions.answer(first.decision, Answer.cases.Chose.make({ option: "ci-amd64" }), "", "inbox")),
+        ],
+        { concurrency: "unbounded" },
+      )
+
+      expect(answers.filter(Result.isSuccess).length).toBe(1)
+      expect((yield* outside.wakes).length).toBe(1)
+
+      const repeated = yield* Effect.flip(decisions.raise(session, waits, Option.none()))
+      expect(repeated._tag).toBe("InvalidDecision")
     }),
   ))

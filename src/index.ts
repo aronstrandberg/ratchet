@@ -23,13 +23,27 @@ export { WebhookStream } from "./gateway/webhook-stream.ts"
 
 export { Hub } from "./hub/entrypoint.ts"
 
-const AnswerForm = Schema.Struct({
+const AnswerBody = Schema.Struct({
   option: Schema.optional(Schema.String),
-  text: Schema.optional(Schema.String),
+  text: Schema.optional(Answer.cases.Wrote.fields.text),
   note: Schema.optional(Schema.String),
 })
 
-const decodeAnswerForm = Schema.decodeUnknownResult(AnswerForm)
+const decodeAnswerBody = Schema.decodeUnknownResult(Schema.fromJsonString(AnswerBody))
+
+/** The status a failure of the hub's answer stands for, by the name it keeps across the binding. */
+const answerStatus = (name: string): number | null => {
+  switch (name) {
+    case "UnknownDecision":
+      return 404
+    case "DecisionClosed":
+      return 409
+    case "UnknownOption":
+      return 400
+    default:
+      return null
+  }
+}
 
 const route = async (request: Request, env: Env): Promise<Response> => {
   switch (new URL(request.url).pathname) {
@@ -65,9 +79,12 @@ const answer = async (request: Request, env: Env): Promise<Response> => {
 
   if (id === undefined || request.method !== "POST") return new Response("not found\n", { status: 404 })
 
-  const json = (request.headers.get("content-type") ?? "").includes("application/json")
-  const sent = json ? await request.json() : Object.fromEntries(await request.formData())
-  const fields = decodeAnswerForm(sent)
+  // JSON only: a page on another site can post a form here without asking, but not JSON.
+  if (!(request.headers.get("content-type") ?? "").startsWith("application/json")) {
+    return new Response("send the answer as application/json\n", { status: 415 })
+  }
+
+  const fields = decodeAnswerBody(await request.text())
 
   if (Result.isFailure(fields)) return new Response(`${fields.failure.message}\n`, { status: 400 })
   const { option = "", text = "", note = "" } = fields.success
@@ -81,7 +98,15 @@ const answer = async (request: Request, env: Env): Promise<Response> => {
       ? Answer.cases.Wrote.make({ text: text.trim() })
       : Answer.cases.Chose.make({ option: option.trim() })
 
-  await env.HUB.answer({ id, answer: Schema.encodeSync(Answer)(given), note: note.trim() })
+  try {
+    await env.HUB.answer({ id, answer: Schema.encodeSync(Answer)(given), note: note.trim() })
+  } catch (cause) {
+    const status = cause instanceof Error ? answerStatus(cause.name) : null
+
+    if (status === null) throw cause
+
+    return Response.json({ error: cause instanceof Error ? cause.message : String(cause) }, { status })
+  }
 
   return new Response(null, { status: 204 })
 }
@@ -105,9 +130,12 @@ const signIn = async (request: Request, env: Env): Promise<Response> => {
  *
  * A route that fails answers 503 with the failure's message, which names no secret.
  */
+/** Whether a request names this machine. A page whose name resolves here by a trick names its own host. */
+const loopback = (request: Request) => /^(127\.0\.0\.1|localhost|\[::1\])(:\d+)?$/.test(request.headers.get("host") ?? "")
+
 export default {
   fetch: (request: Request, env: Env): Promise<Response> =>
-    route(request, env).catch((cause: unknown) =>
+    (loopback(request) ? route(request, env) : Promise.resolve(new Response("forbidden\n", { status: 403 }))).catch((cause: unknown) =>
       Response.json({ error: cause instanceof Error ? cause.message : String(cause) }, { status: 503 }),
     ),
 }

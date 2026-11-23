@@ -51,18 +51,20 @@ const instructions = `Ratchet tracks this session's work as tasks. A session wor
   request. It messages this session when a run waits for someone to confirm it or for an approval, fails,
   or is discarded. A run that waits applies a change to real infrastructure: read its plan and tell the
   user what it would change. Confirm it only when the user has asked this session to.
-- When you need the user to choose and you have a recommendation, call decision_raise instead of asking in
-  the session or with the question tool. The user answers in Ratchet's inbox, and Ratchet messages this
-  session with the answer. A choice that can be undone does not stop you: act on your recommendation at
-  once, and undo it if the user chooses otherwise. A choice that cannot be undone waits for the answer:
-  changing production, deleting data, sending messages to people, merging, spending money, or changing the
-  task's scope or design. Keep the question tool for a turn that cannot go on without an answer and where
-  you have no recommendation.
+- Decide small details that can be undone yourself, without asking. When a choice is the user's and you
+  have a recommendation, call decision_raise instead of the question tool, then tell the user in a sentence
+  that you raised it. The user answers in this session or in their coordinator's session, and Ratchet
+  messages this session with an answer given elsewhere. A choice that can be undone does not stop you: act
+  on your recommendation at once, and undo it if the user chooses otherwise. A choice that cannot be undone
+  waits for the answer: changing production, deleting data, sending messages to people, merging, spending
+  money, or changing the task's scope or design. Keep the question tool for a turn that cannot go on without
+  an answer and where you have no recommendation.
 - When the user answers a decision in this session's own window instead, or the question no longer
   matters, call decision_close.
 - The user may make one session the coordinator, with inbox_watch. Ratchet then posts each decision there
   when it opens and when it closes, without starting a turn. In that session, show a decision's brief and
-  options as Ratchet wrote them, and call decision_answer only with what the user said in this turn.`
+  options as Ratchet wrote them, and call decision_answer only with what the user said in this turn. Never
+  call inbox_watch or decision_answer on your own.`
 
 const Failure = Schema.Struct({ message: Schema.String })
 
@@ -191,7 +193,11 @@ const DecisionClose = Tool.make("decision_close", {
 const InboxWatch = Tool.make("inbox_watch", {
   description:
     "Make this session the coordinator: Ratchet posts every decision here when it opens and when it closes. Call it only when the user asks. It answers with what waits on the user now.",
-  parameters: Tool.EmptyParams,
+  parameters: Schema.Struct({
+    replace: Schema.optional(Schema.Boolean).annotate({
+      description: "Take the seat from another session. Only when the user asked to move the coordinator here.",
+    }),
+  }),
   success: Decisions.InboxCards,
   failure: Failure,
   failureMode: "return",
@@ -214,7 +220,7 @@ const DecisionAnswer = Tool.make("decision_answer", {
   parameters: Schema.Struct({
     decision: DecisionId.annotate({ description: "The decision's ID, starting with dec_." }),
     option: Schema.optional(Schema.String).annotate({ description: "The label of the option the user chose." }),
-    text: Schema.optional(Schema.String).annotate({
+    text: Schema.optional(Answer.cases.Wrote.fields.text).annotate({
       description: "The user's answer in their own words, when no option fits. Give option or text.",
     }),
     note: Schema.optional(Schema.String).annotate({ description: "Anything else the user said for that session." }),
@@ -406,6 +412,8 @@ type ToolFailure =
   | Decisions.NotADecisionOfSession
   | Decisions.UnknownOption
   | Decisions.NotCoordinator
+  | Decisions.OwnDecision
+  | Decisions.SeatTaken
   | NoAnswer
   | UnknownReference
   | ResourceNotFound
@@ -432,6 +440,9 @@ const explain = Match.type<ToolFailure>().pipe(
     UnknownOption: (failure) => failure.message,
     NotCoordinator: (failure) => `${failure.message}. The user makes a session the coordinator with inbox_watch.`,
     NoAnswer: (failure) => failure.message,
+    OwnDecision: (failure) => `${failure.message}, in the session that raised it.`,
+    SeatTaken: (failure) =>
+      `${failure.message}. Move it here only if the user asked: call inbox_watch again with replace true.`,
     UnknownReference: (failure) =>
       `${failure.message}. Give a pull request, a Linear issue or an incident by its address or its short name, such as owner/repo#12, DX-1550 or INC-123.`,
     ResourceNotFound: (failure) => `${failure.message}. It is not registered.`,
@@ -532,7 +543,7 @@ const handlers = (env: Env) => {
             return { decision }
           })
         }),
-      inbox_watch: () => decisions((service, session) => service.seat(session)),
+      inbox_watch: ({ replace }) => decisions((service, session) => service.seat(session, replace ?? false)),
       inbox_list: () => decisions((service) => service.inbox),
       resource_unregister: ({ resource }) =>
         resources((service, session) => Effect.flatMap(named(resource), (ref) => service.unregister(session, ref))),

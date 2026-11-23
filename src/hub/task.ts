@@ -128,7 +128,11 @@ export const TaskEvent = Event({
   },
   WakeDelivered: { id: Schema.String },
   DecisionOpened: OpenDecision.fields,
-  DecisionClosed: { id: DecisionId },
+  /**
+   * A decision closed. `wake` is the message that brings the answer to the session that asked, or null when
+   * there is none: queued here, in the same step, so a decision never leaves the task without it.
+   */
+  DecisionClosed: { id: DecisionId, wake: Schema.NullOr(Wake) },
 })
 
 const open = [TaskState.NeedsMe, TaskState.Working, TaskState.Watching, TaskState.Idle] as const
@@ -305,9 +309,16 @@ export const taskMachine = Machine.make({
       ],
     }),
   )
-  .on(open, TaskEvent.DecisionClosed, ({ state, event }) =>
-    settle({ ...detailsOf(state), decisions: without(state.decisions, (d) => d.id === event.id) }),
-  )
+  .on(open, TaskEvent.DecisionClosed, ({ state, event }) => {
+    // A decision closes once: sent again, the event queues no second message.
+    if (!state.decisions.some((d) => d.id === event.id)) return state
+
+    return settle({
+      ...detailsOf(state),
+      decisions: without(state.decisions, (d) => d.id === event.id),
+      outbox: event.wake === null ? state.outbox : [...without(state.outbox, (w) => w.id === event.wake?.id), event.wake],
+    })
+  })
 
 /** A task as a cell: one per task ID. */
 export const TaskEntity = toEntity(taskMachine, { type: "Task" })
