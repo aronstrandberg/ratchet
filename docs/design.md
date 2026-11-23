@@ -206,7 +206,7 @@ PR from the traces, and add a comment rule when the traces show its noise.
 | --- | --- | --- | --- |
 | Task | Task | Lifecycle above | Session events, changes to attached resources, answers |
 | Resource | External thing | Per kind, such as `Open(head, ci, review)`, `Merged`, `Closed` | Frames, its polling alarm, attach and detach |
-| Decision | Question raised | `Open`, `Answered`, `Acted`, `Superseded` | My answer, its default timer |
+| Decision | Question raised | `Open`, `Answered`, `Relayed`, `Stood`, `Superseded`, `Withdrawn`. Proposed in [reports-and-decisions.md](reports-and-decisions.md) | My answer, the task's end |
 | Orchestrator | Me | `Quiet`, `HasWork` | Stalls, tasks to group, defaults that fired |
 
 The index is a read model in D1, written from cell events. The panel and the

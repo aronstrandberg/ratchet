@@ -1,6 +1,7 @@
 [global]
 line-length = 80
-exclude = ["tools/oxlint/anti-slop/**", ".agents/**"]
+# docs/direction.md is a copy of a document, kept as it was written.
+exclude = ["tools/oxlint/anti-slop/**", ".agents/**", "docs/direction.md"]
 # Keep the exclusion when a hook passes file names.
 force-exclude = true
 
