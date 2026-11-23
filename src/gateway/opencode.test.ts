@@ -9,6 +9,8 @@ const wake: Wake = {
   session: SessionId.make("ses_1"),
   text: "It merged.",
   queuedAt: 1_794_526_147_816,
+  card: null,
+  resume: true,
 }
 
 test("a wake-up sent again becomes the same message, and another wake-up a different one", async () => {

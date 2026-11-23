@@ -8,6 +8,7 @@ import type { Wake } from "../protocol/wake.ts"
 import * as Cells from "./cells.ts"
 import { CommitBuildsEntity, commitBuildsMachine } from "./commit-builds.ts"
 import { CommitRunsEntity, commitRunsMachine } from "./commit-runs.ts"
+import { CoordinatorEntity, coordinatorMachine } from "./coordinator.ts"
 import { DecisionEntity, decisionMachine } from "./decision.ts"
 import * as Decisions from "./decisions.ts"
 import { IncidentEntity, incidentMachine } from "./incident.ts"
@@ -112,6 +113,7 @@ const cells = Layer.mergeAll(
   EntityMachine.layer(CommitBuildsEntity, commitBuildsMachine),
   EntityMachine.layer(CommitRunsEntity, commitRunsMachine),
   EntityMachine.layer(DecisionEntity, decisionMachine),
+  EntityMachine.layer(CoordinatorEntity, coordinatorMachine),
 ).pipe(Layer.provideMerge(TestRunner.layer))
 
 /**

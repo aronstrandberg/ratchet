@@ -5,6 +5,7 @@ import { DecisionId } from "../protocol/decision.ts"
 import { SessionId, TaskId } from "../protocol/ids.ts"
 import { Outcome, Relation, ResourceKey, WorkStatus } from "../protocol/resource.ts"
 import { Question } from "../protocol/session.ts"
+import { Card } from "../protocol/card.ts"
 import { Wake } from "../protocol/wake.ts"
 
 /** A running subagent. `watching` marks one that monitors something and does no work on the task. */
@@ -122,10 +123,16 @@ export const TaskEvent = Event({
     text: Schema.String,
     /** When it was queued, in milliseconds since the epoch. */
     at: Schema.Number.pipe(Schema.withDecodingDefaultKey(Effect.succeed(0))),
+    card: Schema.NullOr(Card).pipe(Schema.withDecodingDefaultKey(Effect.succeed(null))),
+    resume: Schema.Boolean.pipe(Schema.withDecodingDefaultKey(Effect.succeed(true))),
   },
   WakeDelivered: { id: Schema.String },
   DecisionOpened: OpenDecision.fields,
-  DecisionClosed: { id: DecisionId },
+  /**
+   * A decision closed. `wake` is the message that brings the answer to the session that asked, or null when
+   * there is none: queued here, in the same step, so a decision never leaves the task without it.
+   */
+  DecisionClosed: { id: DecisionId, wake: Schema.NullOr(Wake) },
 })
 
 const open = [TaskState.NeedsMe, TaskState.Working, TaskState.Watching, TaskState.Idle] as const
@@ -279,7 +286,14 @@ export const taskMachine = Machine.make({
       ...detailsOf(state),
       outbox: [
         ...without(state.outbox, (w) => w.id === event.id),
-        { id: event.id, session: event.session, text: event.text, queuedAt: event.at },
+        {
+          id: event.id,
+          session: event.session,
+          text: event.text,
+          queuedAt: event.at,
+          card: event.card,
+          resume: event.resume,
+        },
       ],
     }),
   )
@@ -295,9 +309,16 @@ export const taskMachine = Machine.make({
       ],
     }),
   )
-  .on(open, TaskEvent.DecisionClosed, ({ state, event }) =>
-    settle({ ...detailsOf(state), decisions: without(state.decisions, (d) => d.id === event.id) }),
-  )
+  .on(open, TaskEvent.DecisionClosed, ({ state, event }) => {
+    // A decision closes once: sent again, the event queues no second message.
+    if (!state.decisions.some((d) => d.id === event.id)) return state
+
+    return settle({
+      ...detailsOf(state),
+      decisions: without(state.decisions, (d) => d.id === event.id),
+      outbox: event.wake === null ? state.outbox : [...without(state.outbox, (w) => w.id === event.wake?.id), event.wake],
+    })
+  })
 
 /** A task as a cell: one per task ID. */
 export const TaskEntity = toEntity(taskMachine, { type: "Task" })

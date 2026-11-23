@@ -8,6 +8,7 @@ import * as Cells from "./cells.ts"
 import * as GatewayBinding from "./gateway-binding.ts"
 import { CommitBuildsEntity, commitBuildsMachine } from "./commit-builds.ts"
 import { CommitRunsEntity, commitRunsMachine } from "./commit-runs.ts"
+import { CoordinatorEntity, coordinatorMachine } from "./coordinator.ts"
 import { DecisionEntity, decisionMachine } from "./decision.ts"
 import * as Decisions from "./decisions.ts"
 import { IncidentEntity, incidentMachine } from "./incident.ts"
@@ -35,6 +36,7 @@ const cells = (env: Env, config: Config.Hub) =>
     EntityMachine.layer(CommitBuildsEntity, commitBuildsMachine, journal),
     EntityMachine.layer(CommitRunsEntity, commitRunsMachine, journal),
     EntityMachine.layer(DecisionEntity, decisionMachine, journal),
+    EntityMachine.layer(CoordinatorEntity, coordinatorMachine, journal),
   ).pipe(
     Layer.provide(
       Persistence.layerSqlite(
@@ -47,6 +49,7 @@ const cells = (env: Env, config: Config.Hub) =>
           CommitBuilds: Persistence.journaled(commitBuildsMachine),
           CommitRuns: Persistence.journaled(commitRunsMachine),
           Decision: Persistence.journaled(decisionMachine),
+          Coordinator: Persistence.journaled(coordinatorMachine),
         },
         CloudflareCluster.DurableObjectSqlClient.orDie,
       ),
@@ -54,7 +57,7 @@ const cells = (env: Env, config: Config.Hub) =>
     Layer.provideMerge(Telemetry.layer(config.tracing, "ratchet-hub")),
     Layer.provideMerge(
       CloudflareCluster.layer({
-        entities: [TaskEntity, SessionEntity, PullRequestEntity, LinearIssueEntity, IncidentEntity, CommitBuildsEntity, CommitRunsEntity, DecisionEntity],
+        entities: [TaskEntity, SessionEntity, PullRequestEntity, LinearIssueEntity, IncidentEntity, CommitBuildsEntity, CommitRunsEntity, DecisionEntity, CoordinatorEntity],
         entityNamespace: env.CLUSTER_ENTITY,
         workflowNamespace: env.CLUSTER_WORKFLOW,
         queueNamespace: env.CLUSTER_QUEUE,

@@ -58,8 +58,11 @@ export const Answer = Schema.TaggedUnion({
 
 export type Answer = typeof Answer.Type
 
-/** Where an answer was given: in Ratchet's inbox, or in the session's own window, as the session reports it. */
-export const AnsweredIn = Schema.Literals(["inbox", "session"])
+/**
+ * Where an answer was given: through the inbox's routes, in the coordinator's session, or in the window of the
+ * session that asked, as that session reports it.
+ */
+export const AnsweredIn = Schema.Literals(["inbox", "coordinator", "session"])
 
 export type AnsweredIn = typeof AnsweredIn.Type
 

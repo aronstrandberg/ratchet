@@ -39,7 +39,7 @@ It replaces the `status`, `decision` and `done` tools in
 | Relay | The answer is a wake-up in the task's outbox, delivered like a resource's change. The decision closes when I answer; the outbox holds the wake-up until OpenCode has it |
 | Question forms | Stay, for a turn that cannot go on without an answer and has no recommendation. Ratchet shows a form's fields and answers it through OpenCode's API. A form never takes a default: it does not say whether the choice can be undone |
 | Where I answer | A web page served by Ratchet, over routes that any other surface can call |
-| Receivers | Subscriptions on the task. Built first: the board. Later: the task that forked this one, the coordinator, a channel that reaches me |
+| Receivers | Subscriptions on the task. Built: the board and the coordinator's session. Later: the task that forked this one, a channel that reaches me |
 
 ## Reports
 
@@ -125,16 +125,33 @@ denies the question tool to a session with a recommendation replaces the prose.
 
 ## Where I read and answer
 
+I answer in OpenCode, in one of two places. Most often in the session that
+asked: I reply in its window, and the session calls `decision_close` with the
+option I chose. Otherwise in the coordinator's session, which hears of every
+decision.
+
+| Where | How |
+| --- | --- |
+| The session that asked | Its `decision_raise` call shows the decision. I answer in words, and the session closes the decision with `decision_close` |
+| The coordinator's session | A session I seat with `inbox_watch`. Ratchet posts each decision there when it opens and when it closes, as a message that starts no turn. I answer in words, and the session calls `decision_answer`, which only the seated session may call. `inbox_list` lists what is open |
+| The inbox's routes | `GET /inbox` lists what waits on me as JSON, and `POST /decisions/<id>/answer` answers. For a page or another client |
+
+Each message Ratchet posts to the coordinator carries the decision as a card in
+its metadata, under `ratchet.card`: the brief, the options, the recommended one,
+and how it ended. An OpenCode plugin can draw that as a card with a button per
+option. The message's text is the same in Markdown, the brief first, for a
+client without the plugin.
+
 | Route | Does |
 | --- | --- |
 | `GET /inbox` | What waits on me as JSON: `waits` decisions, then question forms and permission requests (titles only), then the decisions that took their default. Each item names its task. Built |
-| `POST /decisions/<id>/answer` | An option or a written answer, and a note. Built |
-| `GET /` | The page over these routes: a card per item, with a button per option. Not built |
+| `POST /decisions/<id>/answer` | An option or a written answer, and a note, as JSON. Only requests to the loopback address are served. Built |
+| `GET /` | A page over these routes. A draft, kept apart |
 | `POST /sessions/<id>/forms/<form>/reply` | A form's answer, passed to OpenCode |
 | `POST /sessions/<id>/permissions/<request>/reply` | Allow once, allow always or reject, passed to OpenCode |
 
-An answer records who gave it: me on a named surface, the session after I
-answered in its window, or later the coordinator.
+An answer records where it was given: the inbox's routes, the coordinator's
+session, or the session that asked.
 
 ## How it is stored
 
@@ -156,7 +173,7 @@ A subscription is a receiver and the kinds it takes.
 | --- | --- | --- | --- |
 | The board | Everything | The index, read by the page | First |
 | The task that forked this one, when `task_fork` made it | `done`, `blocked` | A wake-up to its session | After the page |
-| The coordinator | Not decided | A wake-up, batched | When its role is decided |
+| The coordinator's session | Every decision, when it opens and when it closes | A message that starts no turn, with the decision as a card in its metadata | Built |
 | A channel that reaches me away from the page | `waits` decisions, `done` | Not decided | Later |
 
 ## Build order
@@ -183,6 +200,8 @@ carry a recommendation.
 2. How the page is reached from my laptop. The service listens on loopback on
    the dev VM. Anything wider than an SSH forward needs a sign-in on the answer
    routes.
-3. Whether a `waits` decision should reach me outside the page, and where.
-4. Whether the coordinator may answer a decision for me, and which reports reach
-   it.
+3. Whether a `waits` decision should reach me outside OpenCode, and where.
+4. Whether the coordinator's agent may answer anything I did not say, and which
+   reports reach it. Today it answers only with what I said in the same turn.
+5. Whether a question form a session opens should also reach the coordinator.
+   Today it shows only as a title in `inbox_list`.

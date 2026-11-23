@@ -3,7 +3,7 @@ import { McpProtocol, McpSchema, McpServer, Tool, Toolkit } from "effect/ai"
 import { HttpRouter } from "effect/http"
 import type { Env } from "../env.ts"
 import { causeText } from "../failure.ts"
-import { Choice, DecisionId, DecisionKind, DecisionSpec } from "../protocol/decision.ts"
+import { Answer, Choice, DecisionId, DecisionKind, DecisionSpec } from "../protocol/decision.ts"
 import { SessionId } from "../protocol/ids.ts"
 import { PullRequestRef } from "../protocol/pull-request.ts"
 import { Relation, ResourceRef, parseReference } from "../protocol/resource.ts"
@@ -51,15 +51,20 @@ const instructions = `Ratchet tracks this session's work as tasks. A session wor
   request. It messages this session when a run waits for someone to confirm it or for an approval, fails,
   or is discarded. A run that waits applies a change to real infrastructure: read its plan and tell the
   user what it would change. Confirm it only when the user has asked this session to.
-- When you need the user to choose and you have a recommendation, call decision_raise instead of asking in
-  the session or with the question tool. The user answers in Ratchet's inbox, and Ratchet messages this
-  session with the answer. A choice that can be undone does not stop you: act on your recommendation at
-  once, and undo it if the user chooses otherwise. A choice that cannot be undone waits for the answer:
-  changing production, deleting data, sending messages to people, merging, spending money, or changing the
-  task's scope or design. Keep the question tool for a turn that cannot go on without an answer and where
-  you have no recommendation.
+- Decide small details that can be undone yourself, without asking. When a choice is the user's and you
+  have a recommendation, call decision_raise instead of the question tool, then tell the user in a sentence
+  that you raised it. The user answers in this session or in their coordinator's session, and Ratchet
+  messages this session with an answer given elsewhere. A choice that can be undone does not stop you: act
+  on your recommendation at once, and undo it if the user chooses otherwise. A choice that cannot be undone
+  waits for the answer: changing production, deleting data, sending messages to people, merging, spending
+  money, or changing the task's scope or design. Keep the question tool for a turn that cannot go on without
+  an answer and where you have no recommendation.
 - When the user answers a decision in this session's own window instead, or the question no longer
-  matters, call decision_close.`
+  matters, call decision_close.
+- The user may make one session the coordinator, with inbox_watch. Ratchet then posts each decision there
+  when it opens and when it closes, without starting a turn. In that session, show a decision's brief and
+  options as Ratchet wrote them, and call decision_answer only with what the user said in this turn. Never
+  call inbox_watch or decision_answer on your own.`
 
 const Failure = Schema.Struct({ message: Schema.String })
 
@@ -133,7 +138,7 @@ const SubagentDeclare = Tool.make("subagent_declare", {
 
 const DecisionRaise = Tool.make("decision_raise", {
   description:
-    "Ask the user to choose, with your recommendation, on this session's current task. The user answers in Ratchet's inbox, and Ratchet messages this session with the answer. The answer's meanwhile field says what to do until then.",
+    "Ask the user to choose, with your recommendation, on this session's current task. The user answers in this session or in their coordinator's session. The answer's meanwhile field says what to do until then, and its wakes field whether Ratchet will message this session with an answer given elsewhere; when it is false, ask the user to answer here.",
   parameters: Schema.Struct({
     question: DecisionSpec.fields.question.annotate({ description: "The question, in at most 140 characters." }),
     brief: DecisionSpec.fields.brief.annotate({
@@ -178,6 +183,47 @@ const DecisionClose = Tool.make("decision_close", {
     decision: DecisionId.annotate({ description: "The decision's ID, starting with dec_." }),
     option: Schema.optional(Schema.String).annotate({ description: "The label of the option the user chose here." }),
     reason: Schema.String.annotate({ description: "What the user said, or why the question no longer matters." }),
+  }),
+  success: Schema.Struct({ decision: DecisionId }),
+  failure: Failure,
+  failureMode: "return",
+  dependencies: [McpSchema.McpRequestContext],
+})
+
+const InboxWatch = Tool.make("inbox_watch", {
+  description:
+    "Make this session the coordinator: Ratchet posts every decision here when it opens and when it closes. Call it only when the user asks. It answers with what waits on the user now.",
+  parameters: Schema.Struct({
+    replace: Schema.optional(Schema.Boolean).annotate({
+      description: "Take the seat from another session. Only when the user asked to move the coordinator here.",
+    }),
+  }),
+  success: Decisions.InboxCards,
+  failure: Failure,
+  failureMode: "return",
+  dependencies: [McpSchema.McpRequestContext],
+})
+
+const InboxList = Tool.make("inbox_list", {
+  description:
+    "List what waits on the user: decisions sessions wait on, open question forms and permission requests, and decisions whose recommended option a session acts on meanwhile.",
+  parameters: Tool.EmptyParams,
+  success: Decisions.InboxCards,
+  failure: Failure,
+  failureMode: "return",
+  dependencies: [McpSchema.McpRequestContext],
+})
+
+const DecisionAnswer = Tool.make("decision_answer", {
+  description:
+    "Answer a decision for the user, from the coordinator's session only, with what the user said in this turn. Ratchet messages the session that asked, unless the answer confirms the option it already acts on.",
+  parameters: Schema.Struct({
+    decision: DecisionId.annotate({ description: "The decision's ID, starting with dec_." }),
+    option: Schema.optional(Schema.String).annotate({ description: "The label of the option the user chose." }),
+    text: Schema.optional(Answer.cases.Wrote.fields.text).annotate({
+      description: "The user's answer in their own words, when no option fits. Give option or text.",
+    }),
+    note: Schema.optional(Schema.String).annotate({ description: "Anything else the user said for that session." }),
   }),
   success: Schema.Struct({ decision: DecisionId }),
   failure: Failure,
@@ -309,7 +355,17 @@ const SessionTools = Toolkit.make(
   ResourceUnregister,
   DecisionRaise,
   DecisionClose,
+  DecisionAnswer,
+  InboxWatch,
+  InboxList,
 )
+
+/** decision_answer was given neither an option nor an answer in words. */
+class NoAnswer extends Schema.TaggedError<NoAnswer>()("NoAnswer", {}) {
+  override get message(): string {
+    return "Give the option the user chose, or their answer as text"
+  }
+}
 
 /** What a session gave as a resource is none of the kinds Ratchet follows. */
 class UnknownReference extends Schema.TaggedError<UnknownReference>()("UnknownReference", { given: Schema.String }) {
@@ -355,6 +411,10 @@ type ToolFailure =
   | Decisions.DecisionClosed
   | Decisions.NotADecisionOfSession
   | Decisions.UnknownOption
+  | Decisions.NotCoordinator
+  | Decisions.OwnDecision
+  | Decisions.SeatTaken
+  | NoAnswer
   | UnknownReference
   | ResourceNotFound
   | ResourceNotSignedIn
@@ -378,6 +438,11 @@ const explain = Match.type<ToolFailure>().pipe(
     DecisionClosed: (failure) => failure.message,
     NotADecisionOfSession: (failure) => failure.message,
     UnknownOption: (failure) => failure.message,
+    NotCoordinator: (failure) => `${failure.message}. The user makes a session the coordinator with inbox_watch.`,
+    NoAnswer: (failure) => failure.message,
+    OwnDecision: (failure) => `${failure.message}, in the session that raised it.`,
+    SeatTaken: (failure) =>
+      `${failure.message}. Move it here only if the user asked: call inbox_watch again with replace true.`,
     UnknownReference: (failure) =>
       `${failure.message}. Give a pull request, a Linear issue or an incident by its address or its short name, such as owner/repo#12, DX-1550 or INC-123.`,
     ResourceNotFound: (failure) => `${failure.message}. It is not registered.`,
@@ -462,6 +527,24 @@ const handlers = (env: Env) => {
         decisions((service, session) =>
           Effect.as(service.close(session, decision, Option.fromUndefinedOr(option), reason), { decision }),
         ),
+      decision_answer: ({ decision, option, text, note }) =>
+        decisions((service, session) => {
+          const given: Option.Option<Answer> =
+            option !== undefined && option.trim() !== ""
+              ? Option.some(Answer.cases.Chose.make({ option: option.trim() }))
+              : text !== undefined && text.trim() !== ""
+                ? Option.some(Answer.cases.Wrote.make({ text: text.trim() }))
+                : Option.none()
+
+          return Effect.gen(function* () {
+            if (Option.isNone(given)) return yield* new NoAnswer()
+            yield* service.answerAsCoordinator(session, decision, given.value, note ?? "")
+
+            return { decision }
+          })
+        }),
+      inbox_watch: ({ replace }) => decisions((service, session) => service.seat(session, replace ?? false)),
+      inbox_list: () => decisions((service) => service.inbox),
       resource_unregister: ({ resource }) =>
         resources((service, session) => Effect.flatMap(named(resource), (ref) => service.unregister(session, ref))),
     }),
