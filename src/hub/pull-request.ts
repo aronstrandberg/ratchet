@@ -3,7 +3,7 @@ import { Event, Machine, State } from "effect-machine"
 import { toEntity } from "effect-machine/cluster"
 import { TaskId } from "../protocol/ids.ts"
 import { Check, PullRequestFacts, PullRequestRef, Review, Thread } from "../protocol/pull-request.ts"
-import type { Outcome, Relation } from "../protocol/resource.ts"
+import type { Outcome, Relation, WorkStatus } from "../protocol/resource.ts"
 import { Subscriber, attach, detach } from "./subscribers.ts"
 import type { Attention } from "./attention.ts"
 
@@ -236,9 +236,10 @@ const changesWhileOpen = (before: Open, after: Open): ReadonlyArray<Change> => {
  * request for changes, a new review thread and an unexpected end: a code review is what a session waits for
  * before it queues, and a thread is a finding to answer, whoever wrote them. A merge acts too: the merge queue
  * merges, often long after the session queued it, and the session follows up. Passed checks and approvals may
- * already be known to the session, which often caused them, so they are screened.
+ * already be known to the session, which often caused them, so they are screened. Passed checks act unless the
+ * session said it is at work on the pull request.
  */
-export const attention = (relation: Relation, change: Change): Attention | null => {
+export const attention = (relation: Relation, change: Change, status: WorkStatus): Attention | null => {
   switch (relation) {
     case "context":
       return null
@@ -248,7 +249,10 @@ export const attention = (relation: Relation, change: Change): Attention | null 
       return Change.match(change, {
         HeadMoved: () => null,
         CiFailing: () => "act" as const,
-        CiFinished: ({ failed }) => (failed.length > 0 ? ("act" as const) : ("screen" as const)),
+        // A session that waits merges, queues or asks for a review once CI passes. One at work has usually
+        // pushed again, so the pass may be of a head it no longer cares about.
+        CiFinished: ({ failed }) =>
+          failed.length > 0 || status !== "agent-working" ? ("act" as const) : ("screen" as const),
         ReviewSubmitted: ({ state }) =>
           state === "changes_requested" || state === "commented" ? ("act" as const) : ("screen" as const),
         ThreadOpened: () => "act" as const,
