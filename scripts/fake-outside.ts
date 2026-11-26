@@ -14,6 +14,8 @@
 //   POST /_issue    {"identifier": "DX-1", "title": "…", "state": {"name": "Done", "type": "completed"},
 //                    "assignee": null, "comments": [{"id": "c1", "author": "jifeng"}]}
 //   POST /_incident {"number": 7, "name": "…", "status": {"name": "Closed", "category": "closed"}, "severity": "Major"}
+//   POST /_alert    {"id": "a1", "title": "…", "status": "firing", "team": "devex"}: an alert incident.io received,
+//                   or a change to one
 //   POST /_build    {"commit": "<40 hex>", "pipeline": "bazel", "number": 1, "state": "failed",
 //                    "failedJobs": ["test"]}   optional: "branch" (main), "source" (webhook), "message"
 //                    and ISO "startedAt" and "finishedAt" timestamps
@@ -99,6 +101,13 @@ const webhooks = FakeWebhookProxy.make({ heartbeat: 15_000 })
 const runs = new Map<string, FakeSpacelift.Run>()
 const readRun = Schema.decodeUnknownPromise(FakeSpacelift.Run)
 const spacelift = FakeSpacelift.make(() => [...runs.values()])
+
+const Alert = Schema.Struct({ id: Schema.String, title: Schema.String, status: Schema.String, team: Schema.String })
+
+const readAlert = Schema.decodeUnknownPromise(Alert)
+
+/** The alerts, by ID, each with when it was first put here. */
+const alerts = new Map<string, typeof Alert.Type & { readonly created_at: string }>()
 
 const issues = new Map<string, typeof Issue.Type>()
 const incidents = new Map<number, typeof Incident.Type>()
@@ -255,6 +264,19 @@ const incidentIo = FakeMcp.make(
         },
       }
     },
+    team_list: () => ({ value: { teams: [{ id: "01KRND04CRSYDH6DN71MSR1RNP", name: "DevEx" }] } }),
+    alert_list: () => ({
+      value: {
+        alerts: [...alerts.values()].map((alert) => ({
+          id: alert.id,
+          title: alert.title,
+          status: alert.status,
+          created_at: alert.created_at,
+          attributes: [{ name: "Team", value: [alert.team] }],
+        })),
+        pagination: { has_more: false },
+      },
+    }),
   },
   { streamed: false },
 )
@@ -274,6 +296,13 @@ Bun.serve({
       issues.set(issue.identifier, issue)
 
       return Response.json({ issues: issues.size })
+    }
+
+    if (url.pathname === "/_alert") {
+      const alert = await readAlert(await request.json())
+      alerts.set(alert.id, { ...alert, created_at: alerts.get(alert.id)?.created_at ?? new Date().toISOString() })
+
+      return Response.json({ alerts: alerts.size })
     }
 
     if (url.pathname === "/_incident") {

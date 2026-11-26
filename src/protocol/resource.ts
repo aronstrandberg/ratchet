@@ -1,4 +1,5 @@
 import { Option, Schema } from "effect"
+import { AlertFeedFacts, AlertFeedRef } from "./alerts.ts"
 import { CommitBuildsFacts, CommitBuildsRef } from "./builds.ts"
 import { IncidentFacts, IncidentRef } from "./incident.ts"
 import { LinearIssueFacts, LinearIssueRef } from "./linear.ts"
@@ -12,6 +13,7 @@ export const ResourceRef = Schema.TaggedUnion({
   Incident: IncidentRef.fields,
   CommitBuilds: CommitBuildsRef.fields,
   CommitRuns: CommitRunsRef.fields,
+  AlertFeed: AlertFeedRef.fields,
 })
 
 export type ResourceRef = typeof ResourceRef.Type
@@ -19,13 +21,14 @@ export type ResourceRef = typeof ResourceRef.Type
 /**
  * The name a resource is known by across the hub, in lower case: `owner/repo#number` for a pull request,
  * `linear:dx-1550` for a Linear issue, `incident:123` for an incident, `builds:owner/repo@` and the commit's
- * hash for the builds of a commit, `runs:owner/repo@` and the hash for its infrastructure runs.
+ * hash for the builds of a commit, `runs:owner/repo@` and the hash for its infrastructure runs, `alerts:all`
+ * for every alert and `alerts:team=devex` for one team's.
  *
  * For half a day the builds of a commit were known by the hash alone. A task may hold such a key, so it is
  * still a key, and it names no resource any more.
  */
 export const ResourceKey = Schema.String.pipe(
-  Schema.check(Schema.isPattern(/^([a-z0-9_.-]+\/[a-z0-9_.-]+#[1-9][0-9]*|linear:[a-z][a-z0-9]*-[1-9][0-9]*|incident:[1-9][0-9]*|builds:(?:[a-z0-9_.-]+\/[a-z0-9_.-]+@)?[0-9a-f]{40}|runs:[a-z0-9_.-]+\/[a-z0-9_.-]+@[0-9a-f]{40})$/)),
+  Schema.check(Schema.isPattern(/^([a-z0-9_.-]+\/[a-z0-9_.-]+#[1-9][0-9]*|linear:[a-z][a-z0-9]*-[1-9][0-9]*|incident:[1-9][0-9]*|builds:(?:[a-z0-9_.-]+\/[a-z0-9_.-]+@)?[0-9a-f]{40}|runs:[a-z0-9_.-]+\/[a-z0-9_.-]+@[0-9a-f]{40}|alerts:(?:all|team=[a-z0-9][a-z0-9_.-]*))$/)),
   Schema.brand("ResourceKey"),
 )
 
@@ -40,6 +43,7 @@ export const keyOf = (ref: ResourceRef): ResourceKey =>
       Incident: ({ number }) => `incident:${number}`,
       CommitBuilds: ({ owner, repo, commit }) => `builds:${owner}/${repo}@${commit}`.toLowerCase(),
       CommitRuns: ({ owner, repo, commit }) => `runs:${owner}/${repo}@${commit}`.toLowerCase(),
+      AlertFeed: ({ team }) => (team === null ? "alerts:all" : `alerts:team=${team}`),
     }),
   )
 
@@ -48,6 +52,7 @@ const parseLinearIssue = Schema.decodeUnknownOption(LinearIssueRef)
 const parseIncident = Schema.decodeUnknownOption(IncidentRef)
 const parseCommitBuilds = Schema.decodeUnknownOption(CommitBuildsRef)
 const parseCommitRuns = Schema.decodeUnknownOption(CommitRunsRef)
+const parseAlertFeed = Schema.decodeUnknownOption(AlertFeedRef)
 
 const pullRequest = (owner: string | undefined, repo: string | undefined, number: string | undefined) =>
   Option.map(parsePullRequest({ owner, repo, number: Number(number) }), (ref) => ResourceRef.cases.PullRequest.make(ref))
@@ -63,6 +68,14 @@ const commitBuilds = (owner: string | undefined, repo: string | undefined, commi
 
 const commitRuns = (owner: string | undefined, repo: string | undefined, commit: string | undefined) =>
   Option.map(parseCommitRuns({ owner, repo, commit }), (ref) => ResourceRef.cases.CommitRuns.make(ref))
+
+const alertFeed = (team: string | undefined) =>
+  Option.map(parseAlertFeed({ team: team === undefined || team.toLowerCase() === "all" ? null : team.toLowerCase() }), (ref) =>
+    ResourceRef.cases.AlertFeed.make(ref),
+  )
+
+/** A key of an alert feed, or a short name for one: `alerts`, `alerts:all`, `alerts:devex`, `alerts:team=devex`. */
+const alertsKey = /^alerts(?::(?:team=)?([\w.-]+))?$/i
 
 /** A key of a commit's builds, in its parts. */
 const buildsKey = /^builds:([\w.-]+)\/([\w.-]+)@([0-9a-f]{40})$/
@@ -88,6 +101,8 @@ export const refOf = (key: ResourceKey): Option.Option<ResourceRef> => {
 
   if (key.startsWith("incident:")) return incident(key.slice("incident:".length))
 
+  if (key.startsWith("alerts:")) return alertFeed(alertsKey.exec(key)?.[1])
+
   const [repository, number] = key.split("#")
   const [owner, repo] = (repository ?? "").split("/")
 
@@ -102,6 +117,7 @@ export const labelOf = (ref: ResourceRef): string =>
     Incident: ({ number }) => `incident INC-${number}`,
     CommitBuilds: ({ commit }) => `the builds of commit ${commit.slice(0, 9)}`,
     CommitRuns: ({ commit }) => `the Spacelift runs of commit ${commit.slice(0, 9)}`,
+    AlertFeed: ({ team }) => (team === null ? "the alerts of every team" : `the alerts of team ${team}`),
   })
 
 const shorthand = [
@@ -119,6 +135,8 @@ const shorthand = [
   { pattern: buildsKey, kind: "CommitBuilds" },
   // The infrastructure runs of a commit: their key. The hub follows them itself too.
   { pattern: runsKey, kind: "CommitRuns" },
+  // The alerts incident.io receives: every team's, or one team's.
+  { pattern: alertsKey, kind: "AlertFeed" },
 ] as const
 
 /**
@@ -143,6 +161,8 @@ export const parseReference = (text: string): Option.Option<ResourceRef> => {
         return commitBuilds(first, second, third)
       case "CommitRuns":
         return commitRuns(first, second, third)
+      case "AlertFeed":
+        return alertFeed(first)
     }
   }
 
@@ -174,6 +194,7 @@ export const ResourceFacts = Schema.TaggedUnion({
   Incident: { facts: IncidentFacts },
   CommitBuilds: { facts: CommitBuildsFacts },
   CommitRuns: { facts: CommitRunsFacts },
+  AlertFeed: { facts: AlertFeedFacts },
 })
 
 export type ResourceFacts = typeof ResourceFacts.Type
@@ -186,6 +207,7 @@ export const subjectOf = (observed: ResourceFacts): ResourceRef =>
     Incident: ({ facts }) => ResourceRef.cases.Incident.make(facts.ref),
     CommitBuilds: ({ facts }) => ResourceRef.cases.CommitBuilds.make(facts.ref),
     CommitRuns: ({ facts }) => ResourceRef.cases.CommitRuns.make(facts.ref),
+    AlertFeed: ({ facts }) => ResourceRef.cases.AlertFeed.make(facts.ref),
   })
 
 /**
