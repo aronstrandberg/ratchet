@@ -232,9 +232,11 @@ const changesWhileOpen = (before: Open, after: Open): ReadonlyArray<Change> => {
 /**
  * What a change asks of a session of a task with this relation to the pull request, or null for nothing.
  *
- * A task that waits hears only the end. An owner acts on a failure, a conflict, a request for changes and
- * an unexpected end. Passed checks, other reviews and threads may already be known to the session, which
- * often caused them, so they are screened. A merge is noted: the owner usually merged it.
+ * A task that waits hears only the end. An owner acts on a failure, a conflict, a review with comments or a
+ * request for changes, a new review thread and an unexpected end: a code review is what a session waits for
+ * before it queues, and a thread is a finding to answer, whoever wrote them. Passed checks and approvals may
+ * already be known to the session, which often caused them, so they are screened. A merge is noted: the owner
+ * usually merged it.
  */
 export const attention = (relation: Relation, change: Change): Attention | null => {
   switch (relation) {
@@ -247,8 +249,9 @@ export const attention = (relation: Relation, change: Change): Attention | null 
         HeadMoved: () => null,
         CiFailing: () => "act" as const,
         CiFinished: ({ failed }) => (failed.length > 0 ? ("act" as const) : ("screen" as const)),
-        ReviewSubmitted: ({ state }) => (state === "changes_requested" ? ("act" as const) : ("screen" as const)),
-        ThreadOpened: () => "screen" as const,
+        ReviewSubmitted: ({ state }) =>
+          state === "changes_requested" || state === "commented" ? ("act" as const) : ("screen" as const),
+        ThreadOpened: () => "act" as const,
         ThreadResolved: () => "note" as const,
         Conflicting: () => "act" as const,
         Queued: () => "note" as const,

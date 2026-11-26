@@ -44,9 +44,12 @@ const questions = [
   },
 ]
 
-/** The lines of a wake-up that say what changed, which is what the model judges. */
+/**
+ * The lines of a wake-up the model judges: what changed, and what the session last said about its work on
+ * the resource, such as that it waits for reviews before it merges.
+ */
 const changesOf = (wake: Wake) => {
-  const lines = wake.text.split("\n").filter((line) => line.startsWith("- "))
+  const lines = wake.text.split("\n").filter((line) => line.startsWith("- ") || line.startsWith("You last said"))
 
   return lines.length === 0 ? wake.text : lines.join("\n")
 }
