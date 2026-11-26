@@ -234,9 +234,9 @@ const changesWhileOpen = (before: Open, after: Open): ReadonlyArray<Change> => {
  *
  * A task that waits hears only the end. An owner acts on a failure, a conflict, a review with comments or a
  * request for changes, a new review thread and an unexpected end: a code review is what a session waits for
- * before it queues, and a thread is a finding to answer, whoever wrote them. Passed checks and approvals may
- * already be known to the session, which often caused them, so they are screened. A merge is noted: the owner
- * usually merged it.
+ * before it queues, and a thread is a finding to answer, whoever wrote them. A merge acts too: the merge queue
+ * merges, often long after the session queued it, and the session follows up. Passed checks and approvals may
+ * already be known to the session, which often caused them, so they are screened.
  */
 export const attention = (relation: Relation, change: Change): Attention | null => {
   switch (relation) {
@@ -256,7 +256,7 @@ export const attention = (relation: Relation, change: Change): Attention | null 
         Conflicting: () => "act" as const,
         Queued: () => "note" as const,
         Dequeued: () => "act" as const,
-        Merged: () => "note" as const,
+        Merged: () => "act" as const,
         Closed: () => "act" as const,
       })
   }
