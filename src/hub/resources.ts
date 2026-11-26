@@ -159,7 +159,11 @@ interface Notice {
   /** One line a session can read. */
   readonly text: string
   /** What it asks of a session of a task with this relation to the resource, or null for nothing. */
-  readonly attention: (relation: Relation) => Attention | null
+  /**
+   * What it asks of a session of a task with this relation to the resource, which said this about its work on
+   * it, or null for nothing.
+   */
+  readonly attention: (relation: Relation, status: WorkStatus) => Attention | null
 }
 
 /** A resource's cell as every kind of resource shows it. */
@@ -355,7 +359,7 @@ export const make = Effect.gen(function* () {
             notices: PullRequest.changes(before, after).map((change) => ({
               tag: change._tag,
               text: PullRequest.describe(change),
-              attention: (relation: Relation) => PullRequest.attention(relation, change),
+              attention: (relation: Relation, status: WorkStatus) => PullRequest.attention(relation, change, status),
             })),
           }
 
@@ -531,15 +535,23 @@ export const make = Effect.gen(function* () {
     let woke = 0
 
     for (const subscriber of standing.subscribers) {
-      const relevant = notices.filter((notice) => notice.attention(subscriber.relation) !== null)
-      const level = strongest(notices.flatMap((notice) => Option.toArray(Option.fromNullOr(notice.attention(subscriber.relation)))))
-
-      if (relevant.length === 0 || !WakePolicy.allows(policy, subscriber.session)) continue
+      if (!WakePolicy.allows(policy, subscriber.session)) continue
       const task = yield* cells.task(subscriber.task)
 
       if (isUnborn(task)) continue
-      const current = boundTask(yield* cells.session(subscriber.session)) === subscriber.task
       const attachment = task.attachments.find((held) => held.resource === key)
+      const status = attachment?.status ?? "unassigned"
+
+      const asked = notices.flatMap((notice) => {
+        const level = notice.attention(subscriber.relation, status)
+
+        return level === null ? [] : [{ notice, level }]
+      })
+
+      if (asked.length === 0) continue
+      const relevant = asked.map(({ notice }) => notice)
+      const level = strongest(asked.map((one) => one.level))
+      const current = boundTask(yield* cells.session(subscriber.session)) === subscriber.task
       const said = attachment === undefined || attachment.status === "unassigned" ? null : attachment
       woke += yield* wakes.send(subscriber.task, {
         // One batch of changes has one ID, so the same observation never wakes a session twice.

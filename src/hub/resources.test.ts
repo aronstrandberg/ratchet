@@ -465,3 +465,25 @@ test("the owner of a commit's runs is woken when one waits to be confirmed, and 
       expect(yield* resources.watched).toEqual([runsRef])
     }),
   ))
+
+test("a pass of CI wakes a session that waits for it, and is screened for one that says it is at work", () =>
+  run(
+    Effect.gen(function* () {
+      const { pullRequests, outside } = yield* setUp("Speed up the build", facts({ checks: [check("build", "pending")] }))
+      yield* pullRequests.register(session, ref, "owns")
+
+      yield* pullRequests.setStatus(session, ref, "waiting-ci", "Waits for CI, then queues.")
+      yield* pullRequests.observe(facts({ checks: [check("build", "success")] }))
+      yield* pullRequests.setStatus(session, ref, "agent-working", "Fixing a test.")
+      yield* pullRequests.observe(facts({ head: "bbbbbbbbbbbb", checks: [check("build", "pending")] }))
+      yield* pullRequests.observe(facts({ head: "bbbbbbbbbbbb", checks: [check("build", "success")] }))
+
+      const wakes = yield* outside.wakes
+
+      expect(wakes.map((wake) => [wake.resume, wake.screen])).toEqual([
+        [true, false],
+        [true, true],
+      ])
+      expect(wakes[0]?.text).toContain('You last said of your work on it: waiting-ci, "Waits for CI, then queues."')
+    }),
+  ))
