@@ -249,6 +249,8 @@ interface Subject {
   readonly title: string
   /** Whether it is the task the session works on now. */
   readonly current: boolean
+  /** What the session last said about its work on the resource, or null when it said nothing. */
+  readonly said: { readonly status: WorkStatus; readonly note: string } | null
 }
 
 const wakeText = (label: string, relevant: ReadonlyArray<Notice>, subject: Subject) =>
@@ -258,6 +260,10 @@ const wakeText = (label: string, relevant: ReadonlyArray<Notice>, subject: Subje
     subject.current
       ? `It belongs to your task "${subject.title}".`
       : `It belongs to "${subject.title}", a task you worked on before the one you work on now.`,
+    // The screen reads this too: what a session said it waits for tells whether the change is for it.
+    ...(subject.said === null
+      ? []
+      : [`You last said of your work on it: ${subject.said.status}${subject.said.note === "" ? "" : `, "${subject.said.note}"`}.`]),
     "This is an automatic notification, not a message from Aron. Read it at its source before you act on it.",
   ].join("\n")
 
@@ -533,11 +539,13 @@ export const make = Effect.gen(function* () {
 
       if (isUnborn(task)) continue
       const current = boundTask(yield* cells.session(subscriber.session)) === subscriber.task
+      const attachment = task.attachments.find((held) => held.resource === key)
+      const said = attachment === undefined || attachment.status === "unassigned" ? null : attachment
       woke += yield* wakes.send(subscriber.task, {
         // One batch of changes has one ID, so the same observation never wakes a session twice.
         id: `${key}@${version === "" ? now : version}:${relevant.map((notice) => notice.tag).join("+")}`,
         session: subscriber.session,
-        text: wakeText(label, relevant, { title: task.title, current }),
+        text: wakeText(label, relevant, { title: task.title, current, said }),
         resume: level !== "note",
         screen: level === "screen",
       })
