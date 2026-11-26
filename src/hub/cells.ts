@@ -3,6 +3,7 @@ import { causeText } from "../failure.ts"
 import type { DecisionId } from "../protocol/decision.ts"
 import type { SessionId, TaskId } from "../protocol/ids.ts"
 import type { ResourceKey } from "../protocol/resource.ts"
+import { AlertFeedEntity, type AlertFeedEvent, type AlertFeedState } from "./alert-feed.ts"
 import { CommitBuildsEntity, type CommitBuildsEvent, type CommitBuildsState } from "./commit-builds.ts"
 import { CommitRunsEntity, type CommitRunsEvent, type CommitRunsState } from "./commit-runs.ts"
 import { CoordinatorEntity, CoordinatorEvent, type CoordinatorState, seat } from "./coordinator.ts"
@@ -71,6 +72,12 @@ export interface Interface {
     key: ResourceKey,
     event: typeof CommitRunsEvent.Type,
   ) => Effect.Effect<CommitRunsState, CellUnavailable | Index.IndexError>
+  readonly alertFeed: (key: ResourceKey) => Effect.Effect<AlertFeedState, CellUnavailable>
+  /** Sends a feed of alerts an event and writes the state it answers with to the index. */
+  readonly sendAlertFeed: (
+    key: ResourceKey,
+    event: typeof AlertFeedEvent.Type,
+  ) => Effect.Effect<AlertFeedState, CellUnavailable | Index.IndexError>
   readonly coordinator: Effect.Effect<CoordinatorState, CellUnavailable>
   /** Makes a session the one Ratchet tells about the inbox. */
   readonly seatCoordinator: (session: SessionId) => Effect.Effect<CoordinatorState, CellUnavailable>
@@ -99,6 +106,7 @@ export const make = Effect.gen(function* () {
   const commitRuns = yield* CommitRunsEntity.client
   const decisions = yield* DecisionEntity.client
   const coordinators = yield* CoordinatorEntity.client
+  const alertFeeds = yield* AlertFeedEntity.client
 
   return Service.of({
     task: (id) => tasks(id).GetState().pipe(Effect.mapError(unavailable(`Task/${id}`))),
@@ -153,6 +161,14 @@ export const make = Effect.gen(function* () {
         .pipe(
           Effect.mapError(unavailable(`CommitRuns/${key}`)),
           Effect.tap((state) => index.putCommitRuns(key, state)),
+        ),
+    alertFeed: (key) => alertFeeds(key).GetState().pipe(Effect.mapError(unavailable(`AlertFeed/${key}`))),
+    sendAlertFeed: (key, event) =>
+      alertFeeds(key)
+        .Send({ event })
+        .pipe(
+          Effect.mapError(unavailable(`AlertFeed/${key}`)),
+          Effect.tap((state) => index.putAlertFeed(key, state)),
         ),
     coordinator: coordinators(seat).GetState().pipe(Effect.mapError(unavailable(`Coordinator/${seat}`))),
     seatCoordinator: (session) =>

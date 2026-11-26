@@ -15,7 +15,7 @@ const unavailable = (failure: { readonly message: string }) => Effect.succeed(Re
 
 /**
  * Reads a resource from its own system: a pull request from GitHub, an issue from Linear, an incident from
- * incident.io, the builds that carry a commit from GitHub and Buildkite together, and its infrastructure runs
+ * incident.io, a feed of alerts from incident.io too, the builds that carry a commit from GitHub and Buildkite together, and its infrastructure runs
  * from GitHub and Spacelift together.
  *
  * A resource that is missing or cannot be read is an answer, not a failure, because the hub acts on which it
@@ -54,6 +54,11 @@ export const read = (
           BuildkiteUnavailable: unavailable,
           NotSignedIn: notSignedIn,
         }),
+      ),
+    AlertFeed: (feed) =>
+      Effect.flatMap(IncidentIo.Service, (incidents) => incidents.alerts(feed)).pipe(
+        Effect.map((facts) => Reply.Read.make({ observed: Observed.AlertFeed.make({ facts }) })),
+        Effect.catchTags({ IncidentIoUnavailable: unavailable, NotSignedIn: notSignedIn }),
       ),
     CommitRuns: (commit) =>
       Effect.flatMap(CommitRuns.Service, (runs) => runs.read(commit)).pipe(

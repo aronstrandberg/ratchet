@@ -69,7 +69,7 @@ const outside = Effect.gen(function* () {
     ),
     Layer.succeed(GitHub.Service, GitHub.Service.of({ read: (ref) => Effect.succeed(facts(ref)), landing: unused })),
     Layer.succeed(Linear.Service, Linear.Service.of({ read: unused })),
-    Layer.succeed(IncidentIo.Service, IncidentIo.Service.of({ read: unused })),
+    Layer.succeed(IncidentIo.Service, IncidentIo.Service.of({ read: unused, alerts: unused })),
     Layer.succeed(CommitBuilds.Service, CommitBuilds.Service.of({ read: unused })),
     Layer.succeed(CommitRuns.Service, CommitRuns.Service.of({ read: unused })),
   )

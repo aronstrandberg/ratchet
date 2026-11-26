@@ -13,6 +13,7 @@ import {
   subjectOf,
 } from "../protocol/resource.ts"
 import * as Cells from "./cells.ts"
+import * as AlertFeed from "./alert-feed.ts"
 import * as CommitBuilds from "./commit-builds.ts"
 import * as CommitRuns from "./commit-runs.ts"
 import * as Incident from "./incident.ts"
@@ -235,6 +236,12 @@ const commitRunsStanding = (state: CommitRuns.CommitRunsState): Standing => ({
   state: CommitRuns.summaryOf(state),
 })
 
+const alertFeedStanding = (state: AlertFeed.AlertFeedState): Standing => ({
+  subscribers: state.subscribers,
+  outcome: null,
+  state: AlertFeed.summaryOf(state),
+})
+
 const owns = (subscriber: Subscriber) => subscriber.relation === "owns"
 
 /** The task a wake-up is about, as the woken session should read it. */
@@ -297,6 +304,12 @@ export const make = Effect.gen(function* () {
           ),
         detach: (task) =>
           Effect.map(cells.sendCommitBuilds(key, CommitBuilds.CommitBuildsEvent.Detached({ task })), commitBuildsStanding),
+      }),
+      AlertFeed: (): Cell => ({
+        standing: Effect.map(cells.alertFeed(key), alertFeedStanding),
+        attach: (subscriber) =>
+          Effect.map(cells.sendAlertFeed(key, AlertFeed.AlertFeedEvent.Attached({ subscriber })), alertFeedStanding),
+        detach: (task) => Effect.map(cells.sendAlertFeed(key, AlertFeed.AlertFeedEvent.Detached({ task })), alertFeedStanding),
       }),
       CommitRuns: (): Cell => ({
         standing: Effect.map(cells.commitRuns(key), commitRunsStanding),
@@ -414,6 +427,28 @@ export const make = Effect.gen(function* () {
               tag: change._tag,
               text: CommitBuilds.describe(change),
               attention: (relation: Relation) => CommitBuilds.attention(relation, change),
+            })),
+          }
+        }),
+      AlertFeed: ({ facts }) =>
+        Effect.gen(function* () {
+          const before = yield* cells.alertFeed(key)
+
+          if (AlertFeed.repeats(before, facts)) {
+            return { label, standing: alertFeedStanding(before), version: "", notices: [] }
+          }
+
+          const at = yield* Clock.currentTimeMillis
+          const after = yield* cells.sendAlertFeed(key, AlertFeed.AlertFeedEvent.Observed({ facts, at }))
+
+          return {
+            label,
+            standing: alertFeedStanding(after),
+            version: "",
+            notices: AlertFeed.changes(before, after).map((change) => ({
+              tag: change._tag,
+              text: AlertFeed.describe(change),
+              attention: (relation: Relation) => AlertFeed.attention(relation, change),
             })),
           }
         }),

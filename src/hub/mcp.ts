@@ -43,6 +43,9 @@ const instructions = `Ratchet tracks this session's work as tasks. A session wor
   resource_set_status. The Linear issue a task owns is that task's ticket, and one task at most owns an issue.
   Ratchet messages this session when someone else comments on the issue, when it goes to another person, and
   when the issue or the incident ends.
+- When the user asks this session to watch incident.io's alerts, register a feed with resource_register:
+  alerts:all for every team's alerts, or alerts:team=<team> for one team's, such as alerts:team=devex. Ratchet
+  messages this session with each alert that starts firing, a few at a time, from the next one on.
 - When a pull request this session owns merges, Ratchet follows the builds that carry its merge commit on
   the base branch, and messages this session when one of them fails. Such a build often carries other
   people's changes as well. The failure is this session's to look at: read the build, and say so when
@@ -243,7 +246,7 @@ const WorkState = Schema.Literals(["agent-working", "waiting-ci", "waiting-user"
 
 const resource = Schema.String.annotate({
   description:
-    "The resource by its address in a browser or its short name: a pull request (owner/repo#12), a Linear issue (DX-1550) or an incident.io incident (INC-123).",
+    "The resource by its address in a browser or its short name: a pull request (owner/repo#12), a Linear issue (DX-1550), an incident.io incident (INC-123), or a feed of incident.io alerts: alerts:all for every team's, alerts:team=devex for one team's.",
 })
 
 const PrRegister = Tool.make("pr_register", {
@@ -444,7 +447,7 @@ const explain = Match.type<ToolFailure>().pipe(
     SeatTaken: (failure) =>
       `${failure.message}. Move it here only if the user asked: call inbox_watch again with replace true.`,
     UnknownReference: (failure) =>
-      `${failure.message}. Give a pull request, a Linear issue or an incident by its address or its short name, such as owner/repo#12, DX-1550 or INC-123.`,
+      `${failure.message}. Give a pull request, a Linear issue, an incident or a feed of alerts by its address or its short name, such as owner/repo#12, DX-1550, INC-123, alerts:all or alerts:team=devex.`,
     ResourceNotFound: (failure) => `${failure.message}. It is not registered.`,
     ResourceNotSignedIn: (failure) =>
       `${failure.message}, so it is not registered. Only the user can sign in: GET /gateway/sign-ins/${failure.system}/login on Ratchet's own address answers with the link to open in a browser. Give the user that link.`,

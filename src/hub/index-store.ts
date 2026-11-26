@@ -3,6 +3,7 @@ import { causeText } from "../failure.ts"
 import { DecisionId, DecisionKind, DecisionSpec, Ending } from "../protocol/decision.ts"
 import { SessionId, TaskId } from "../protocol/ids.ts"
 import { type Outcome, ResourceKey } from "../protocol/resource.ts"
+import * as AlertFeed from "./alert-feed.ts"
 import * as CommitBuilds from "./commit-builds.ts"
 import * as CommitRuns from "./commit-runs.ts"
 import { type DecisionState, isOpen, isUnraised } from "./decision.ts"
@@ -115,7 +116,14 @@ type ResourceDetail = typeof ResourceDetail.Type
 const ResourceDetailJson = Schema.fromJsonString(ResourceDetail)
 
 /** The kinds of resource the board lists. */
-export const ResourceKind = Schema.Literals(["pull_request", "linear_issue", "incident", "commit_builds", "commit_runs"])
+export const ResourceKind = Schema.Literals([
+  "pull_request",
+  "linear_issue",
+  "incident",
+  "commit_builds",
+  "commit_runs",
+  "alert_feed",
+])
 
 export type ResourceKind = typeof ResourceKind.Type
 
@@ -199,6 +207,8 @@ export interface Interface {
   readonly putCommitBuilds: (key: ResourceKey, state: CommitBuilds.CommitBuildsState) => Effect.Effect<void, IndexError>
   /** Writes the row of a commit's runs, under the same rule. `waiting` and `failed` list the stacks whose run does. */
   readonly putCommitRuns: (key: ResourceKey, state: CommitRuns.CommitRunsState) => Effect.Effect<void, IndexError>
+  /** Writes the row of a feed of alerts, under the same rule. `failed` lists the titles of the alerts that fire. */
+  readonly putAlertFeed: (key: ResourceKey, state: AlertFeed.AlertFeedState) => Effect.Effect<void, IndexError>
   /** Every task as a forest. A task whose parent is missing from the index is a root. */
   readonly tree: Effect.Effect<ReadonlyArray<TaskNode>, IndexError>
   /** The resources, the latest change first. `watched` keeps those someone follows that can still change. */
@@ -398,6 +408,22 @@ export const make = (database: Database): Effect.Effect<Interface> =>
         }),
       })
 
+    const putAlertFeed = (key: ResourceKey, state: AlertFeed.AlertFeedState) =>
+      putResource(key, {
+        kind: "alert_feed",
+        state: AlertFeed.summaryOf(state),
+        subscribers: state.subscribers,
+        outcome: null,
+        ...AlertFeed.AlertFeedState.$match<Pick<Entry, "title" | "seen" | "detail">>(state, {
+          Unseen: () => ({ title: "", seen: false, detail: {} }),
+          Seen: ({ alerts }) => ({
+            title: key === "alerts:all" ? "Every team's alerts" : `Alerts of team ${key.slice("alerts:team=".length)}`,
+            seen: true,
+            detail: { failed: alerts.filter((alert) => alert.firing).map((alert) => alert.title) },
+          }),
+        }),
+      })
+
     const tree = run("tree", () =>
       database.all("SELECT id, parent, title, state, detail FROM task ORDER BY updated_at DESC"),
     ).pipe(
@@ -515,6 +541,7 @@ export const make = (database: Database): Effect.Effect<Interface> =>
       putIncident,
       putCommitBuilds,
       putCommitRuns,
+      putAlertFeed,
       tree,
       resources,
       tasksWithUndelivered,
