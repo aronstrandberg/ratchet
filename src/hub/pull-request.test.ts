@@ -131,3 +131,16 @@ test("a read that repeats the one before is recognised, and a read that differs 
   expect(repeats(state, { ...seen, checks: [check("a", "success")] })).toBe(false)
   expect(repeats(PullRequestState.Unseen({ subscribers: [] }), seen)).toBe(false)
 })
+
+test("a check that runs again on the same head reports nothing, unless it changes how CI ended", async () => {
+  const seen = await observe(
+    facts({ checks: [check("a", "pending"), check("b", "pending")] }),
+    facts({ checks: [check("a", "success"), check("b", "success")] }),
+    facts({ checks: [check("a", "success"), check("b", "pending")] }),
+    facts({ checks: [check("a", "success"), check("b", "success")] }),
+    facts({ checks: [check("a", "success"), check("b", "pending")] }),
+    facts({ checks: [check("a", "success"), check("b", "failure")] }),
+  )
+
+  expect(seen).toEqual([[], ["CiFinished"], [], [], [], ["CiFinished"]])
+})

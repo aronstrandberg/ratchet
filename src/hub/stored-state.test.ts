@@ -83,3 +83,14 @@ test("a task that follows a commit's builds under their first key, the hash alon
 
   expect(isUnborn(state) ? [] : state.attachments.map((attachment) => refOf(attachment.resource))).toEqual([Option.none()])
 })
+
+const storedPullRequest = Schema.decodeUnknownSync(Schema.fromJsonString(Schema.toCodecJson(pullRequestMachine.stateSchema)))
+
+test("a pull request stored before the cell remembered how CI last finished still loads, as not finished", () => {
+  const state = storedPullRequest(
+    '{"_tag":"Open","ref":{"owner":"o","repo":"r","number":1},"title":"t","head":"aaa","draft":false,"conflicting":false,' +
+      '"reviewDecision":null,"queued":false,"ci":{"_tag":"Running"},"threads":[],"reviews":[],"viewer":"me","subscribers":[]}',
+  )
+
+  expect(state).toMatchObject({ finished: null })
+})

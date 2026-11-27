@@ -1,4 +1,4 @@
-import { Equal, Schema } from "effect"
+import { Effect, Equal, Schema } from "effect"
 import { Event, Machine, State } from "effect-machine"
 import { toEntity } from "effect-machine/cluster"
 import { TaskId } from "../protocol/ids.ts"
@@ -8,9 +8,10 @@ import { Subscriber, attach, detach } from "./subscribers.ts"
 import type { Attention } from "./attention.ts"
 
 /**
- * Where CI stands on one head commit. It moves forward only: `Absent` until a check reports, `Running`, then
- * `Failing` once a check has failed while others still run, then `Finished`. So a head produces at most two
- * CI changes: the first failure and the end.
+ * Where CI stands on one head commit: `Absent` until a check reports, `Running`, `Failing` once a check has
+ * failed while others still run, then `Finished`. A check that runs again, as some do when a review lands,
+ * takes it back to `Running`, so the cell also holds how CI last finished on the head, and tells a session of
+ * an end only when its result differs from the one it was told.
  *
  * `Absent` is not `Finished`: a repository without CI never has a check, and one with CI has none for the
  * first seconds after a push.
@@ -45,6 +46,8 @@ const open = {
   reviewDecision: PullRequestFacts.fields.reviewDecision,
   queued: Schema.Boolean,
   ci: Ci,
+  /** The checks that failed when CI last finished on this head, or null while it has not finished on it. */
+  finished: Schema.NullOr(Schema.Array(Schema.String)).pipe(Schema.withDecodingDefaultKey(Effect.succeed(null))),
   threads: Schema.Array(Thread),
   reviews: Schema.Array(Review),
   viewer: Schema.String,
@@ -83,10 +86,14 @@ const ci = (checks: ReadonlyArray<Check>): Ci => {
   return Ci.cases.Finished.make({ failed })
 }
 
-const project = (facts: PullRequestFacts, subscribers: ReadonlyArray<Subscriber>) => {
+const project = (facts: PullRequestFacts, previous: PullRequestState) => {
+  const subscribers = previous.subscribers
+
   if (facts.state === "merged") return PullRequestState.Merged({ ref: facts.ref, title: facts.title, subscribers })
 
   if (facts.state === "closed") return PullRequestState.Closed({ ref: facts.ref, title: facts.title, subscribers })
+
+  const now = ci(facts.checks)
 
   return PullRequestState.Open({
     ref: facts.ref,
@@ -96,7 +103,8 @@ const project = (facts: PullRequestFacts, subscribers: ReadonlyArray<Subscriber>
     conflicting: facts.mergeable === "conflicting",
     reviewDecision: facts.reviewDecision,
     queued: facts.queued,
-    ci: ci(facts.checks),
+    ci: now,
+    finished: Ci.guards.Finished(now) ? now.failed : isOpen(previous) && previous.head === facts.head ? previous.finished : null,
     threads: facts.threads,
     reviews: facts.reviews,
     viewer: facts.viewer,
@@ -111,7 +119,7 @@ const project = (facts: PullRequestFacts, subscribers: ReadonlyArray<Subscriber>
  * not sent to the cell, because the cell would store it.
  */
 export const repeats = (state: PullRequestState, facts: PullRequestFacts): boolean =>
-  Equal.equals(state, project(facts, state.subscribers))
+  Equal.equals(state, project(facts, state))
 
 const any = [PullRequestState.Unseen, PullRequestState.Open, PullRequestState.Merged, PullRequestState.Closed] as const
 
@@ -121,7 +129,7 @@ export const pullRequestMachine = Machine.make({
   event: PullRequestEvent,
   initial: PullRequestState.Unseen({ subscribers: [] }),
 })
-  .on(any, PullRequestEvent.Observed, ({ state, event }) => project(event.facts, state.subscribers))
+  .on(any, PullRequestEvent.Observed, ({ state, event }) => project(event.facts, state))
   .on(any, PullRequestEvent.Attached, ({ state, event }) =>
     PullRequestState.with(state, { subscribers: attach(state.subscribers, event.subscriber) }),
   )
@@ -181,6 +189,10 @@ const isOpen = PullRequestState.$is("Open")
 const isMerged = PullRequestState.$is("Merged")
 const isClosed = PullRequestState.$is("Closed")
 
+/** Whether CI ended with the same failed checks as when the session was last told of an end. */
+const sameChecks = (told: ReadonlyArray<string> | null, failed: ReadonlyArray<string>) =>
+  told !== null && told.length === failed.length && told.every((name) => failed.includes(name))
+
 const changesWhileOpen = (before: Open, after: Open): ReadonlyArray<Change> => {
   const found: Array<Change> = []
   const sameHead = before.head === after.head
@@ -189,12 +201,14 @@ const changesWhileOpen = (before: Open, after: Open): ReadonlyArray<Change> => {
 
   // A new head starts CI over, whatever the old head's CI said.
   const ciBefore = sameHead ? before.ci : Ci.cases.Absent.make({})
+  const told = sameHead ? before.finished : null
 
-  if (Ci.guards.Failing(after.ci) && (Ci.guards.Running(ciBefore) || Ci.guards.Absent(ciBefore))) {
+  // A failure while checks still run is told before CI first ends on the head, not when a check runs again.
+  if (told === null && Ci.guards.Failing(after.ci) && (Ci.guards.Running(ciBefore) || Ci.guards.Absent(ciBefore))) {
     found.push(Change.cases.CiFailing.make({ head: after.head, failed: after.ci.failed }))
   }
 
-  if (Ci.guards.Finished(after.ci) && !Ci.guards.Finished(ciBefore)) {
+  if (Ci.guards.Finished(after.ci) && !Ci.guards.Finished(ciBefore) && !sameChecks(told, after.ci.failed)) {
     found.push(Change.cases.CiFinished.make({ head: after.head, failed: after.ci.failed }))
   }
 
