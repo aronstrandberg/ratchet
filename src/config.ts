@@ -21,6 +21,8 @@ export interface Settings {
   readonly OPENCODE_PASSWORD?: string
   /** The decision model that screens wake-ups, as `provider/model`. `opencode/jev-1.13-free` unless set. */
   readonly WAKE_SCREEN_MODEL?: string
+  /** The checks that are code reviews by bots, separated by commas. Claude Code Review and Cursor Bugbot unless set. */
+  readonly CODE_REVIEW_CHECKS?: string
   readonly GITHUB_TOKEN?: string
   /** Where Linear's MCP server is. Only a scratch Ratchet sets it, to a stand-in. */
   readonly LINEAR_MCP_URL?: string
@@ -54,7 +56,7 @@ export interface Gateway {
   readonly opencode: { readonly url: string; readonly password: Redacted.Redacted<string> }
   /** How the gateway decides whether a wake-up starts a turn. */
   readonly wakeGate: WakeGate.Config
-  readonly github: { readonly token: Redacted.Redacted<string> }
+  readonly github: { readonly token: Redacted.Redacted<string>; readonly reviewChecks: ReadonlyArray<string> }
   /**
    * What the gateway signs in to for each system: the address the system protects, and the scope to ask for.
    * For Linear and incident.io the address is their MCP server, which is also where the gateway reads them.
@@ -115,7 +117,13 @@ export const gateway = (settings: Settings): Result.Result<Gateway, InvalidConfi
         actionable: 0.5,
         known: 0.5,
       },
-      github: { token: Redacted.make(token) },
+      github: {
+        token: Redacted.make(token),
+        // The code review bots on lovablelabs/lovable report as these checks, and post no review when they find nothing.
+        reviewChecks: Option.getOrElse(optional(settings.CODE_REVIEW_CHECKS), () => "Claude Code Review,Cursor Bugbot")
+          .split(",")
+          .flatMap((name) => (name.trim() === "" ? [] : [name.trim().toLowerCase()])),
+      },
       signIns: {
         // The proxy admits Lovable staff, and learns who that is from the account's email.
         "webhook-proxy": { resource: `${proxy}/api/public/mcp`, scope: "openid email offline" },

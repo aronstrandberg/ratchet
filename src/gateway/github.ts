@@ -54,6 +54,8 @@ export interface Landing {
 /** The token the gateway reads GitHub with. */
 export interface Config {
   readonly token: Redacted.Redacted<string>
+  /** The names of the checks that are code reviews, in lower case, such as `cursor bugbot`. */
+  readonly reviewChecks: ReadonlyArray<string>
 }
 
 /** GitHub's pull requests, as the gateway reads them. */
@@ -257,22 +259,23 @@ const landingFresh = 20_000
 // SAFETY: toLowerCase of a string literal is the literal that Lowercase names.
 const lower = <A extends string>(value: A) => value.toLowerCase() as Lowercase<A>
 
-const check = (context: typeof CheckContext.Type): Check => {
+const check = (reviewChecks: ReadonlyArray<string>) => (context: typeof CheckContext.Type): Check => {
   const required = context.isRequired ?? false
 
   if (context.__typename === "CheckRun") {
     const name = context.name ?? "unnamed check"
+    const review = reviewChecks.includes(name.toLowerCase())
 
-    if (context.status !== "COMPLETED") return { name, state: "pending", required }
+    if (context.status !== "COMPLETED") return { name, state: "pending", required, review }
     const passed = ["SUCCESS", "NEUTRAL", "SKIPPED"].includes(context.conclusion ?? "")
 
-    return { name, state: passed ? "success" : "failure", required }
+    return { name, state: passed ? "success" : "failure", required, review }
   }
 
   const name = context.context ?? "unnamed status"
   const state = context.state === "SUCCESS" ? "success" : context.state === "PENDING" || context.state === "EXPECTED" ? "pending" : "failure"
 
-  return { name, state, required }
+  return { name, state, required, review: reviewChecks.includes(name.toLowerCase()) }
 }
 
 const reviewStates: ReadonlyArray<Review["state"]> = ["approved", "changes_requested", "commented", "dismissed", "pending"]
@@ -316,7 +319,7 @@ export const make = (config: Config): Effect.Effect<Interface, never, HttpClient
         mergeable: lower(pr.mergeable),
         reviewDecision: pr.reviewDecision === null ? null : lower(pr.reviewDecision),
         queued: pr.mergeQueueEntry !== null,
-        checks: (pr.commits.nodes[0]?.commit.statusCheckRollup?.contexts.nodes ?? []).map(check),
+        checks: (pr.commits.nodes[0]?.commit.statusCheckRollup?.contexts.nodes ?? []).map(check(config.reviewChecks)),
         threads: pr.reviewThreads.nodes.map((thread) => ({
           id: thread.id,
           resolved: thread.isResolved,

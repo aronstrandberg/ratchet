@@ -38,7 +38,7 @@ const pullRequest: PullRequestFacts = {
   viewer: "me",
 }
 
-const check = (name: string, state: Check["state"]): Check => ({ name, state, required: true })
+const check = (name: string, state: Check["state"]): Check => ({ name, state, required: true, review: false })
 
 /** A session the hub knows, with `title` as the title of its task, and a resource in its own system. */
 const setUp = (title = "Speed up the build", published: ResourceFacts = facts()) =>

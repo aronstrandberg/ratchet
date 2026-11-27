@@ -15,6 +15,8 @@ export const Check = Schema.Struct({
   state: Schema.Literals(["pending", "success", "failure"]),
   /** Whether the base branch requires this check before a merge. */
   required: Schema.Boolean,
+  /** Whether the check is a code review by a bot, such as Claude Code Review or Cursor Bugbot. */
+  review: Schema.Boolean.pipe(Schema.withDecodingDefaultKey(Effect.succeed(false))),
 })
 
 export type Check = typeof Check.Type
