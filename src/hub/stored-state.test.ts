@@ -86,11 +86,11 @@ test("a task that follows a commit's builds under their first key, the hash alon
 
 const storedPullRequest = Schema.decodeUnknownSync(Schema.fromJsonString(Schema.toCodecJson(pullRequestMachine.stateSchema)))
 
-test("a pull request stored before the cell remembered how CI last finished still loads, as not finished", () => {
+test("a pull request stored before the cell remembered how CI and code review last ended still loads, as unknown", () => {
   const state = storedPullRequest(
     '{"_tag":"Open","ref":{"owner":"o","repo":"r","number":1},"title":"t","head":"aaa","draft":false,"conflicting":false,' +
       '"reviewDecision":null,"queued":false,"ci":{"_tag":"Running"},"threads":[],"reviews":[],"viewer":"me","subscribers":[]}',
   )
 
-  expect(state).toMatchObject({ finished: null })
+  expect(state).toMatchObject({ finished: null, reviewed: null, reviewChecks: [] })
 })

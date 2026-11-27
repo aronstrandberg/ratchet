@@ -48,6 +48,13 @@ const open = {
   ci: Ci,
   /** The checks that failed when CI last finished on this head, or null while it has not finished on it. */
   finished: Schema.NullOr(Schema.Array(Schema.String)).pipe(Schema.withDecodingDefaultKey(Effect.succeed(null))),
+  /**
+   * Whether every code review check has ended on this head at some point, so that the end was told. Null for
+   * a state stored before the cell held it, whose review may have ended unseen: it is not told then.
+   */
+  reviewed: Schema.NullOr(Schema.Boolean).pipe(Schema.withDecodingDefaultKey(Effect.succeed(null))),
+  /** The code review checks on the head, and how each ended or that it still runs. */
+  reviewChecks: Schema.Array(Check).pipe(Schema.withDecodingDefaultKey(Effect.succeed([]))),
   threads: Schema.Array(Thread),
   reviews: Schema.Array(Review),
   viewer: Schema.String,
@@ -94,6 +101,8 @@ const project = (facts: PullRequestFacts, previous: PullRequestState) => {
   if (facts.state === "closed") return PullRequestState.Closed({ ref: facts.ref, title: facts.title, subscribers })
 
   const now = ci(facts.checks)
+  const reviewChecks = facts.checks.filter((check) => check.review)
+  const sameHead = isOpen(previous) && previous.head === facts.head
 
   return PullRequestState.Open({
     ref: facts.ref,
@@ -104,7 +113,9 @@ const project = (facts: PullRequestFacts, previous: PullRequestState) => {
     reviewDecision: facts.reviewDecision,
     queued: facts.queued,
     ci: now,
-    finished: Ci.guards.Finished(now) ? now.failed : isOpen(previous) && previous.head === facts.head ? previous.finished : null,
+    finished: Ci.guards.Finished(now) ? now.failed : sameHead ? previous.finished : null,
+    reviewed: (sameHead && previous.reviewed === true) || (reviewChecks.length > 0 && reviewChecks.every((check) => check.state !== "pending")),
+    reviewChecks,
     threads: facts.threads,
     reviews: facts.reviews,
     viewer: facts.viewer,
@@ -147,6 +158,8 @@ export const Change = Schema.TaggedUnion({
   CiFailing: { head: Schema.String, failed: Schema.Array(Schema.String) },
   /** CI ended on this head. `failed` is empty when it passed. */
   CiFinished: { head: Schema.String, failed: Schema.Array(Schema.String) },
+  /** Every code review check on the head has ended. Told once a head, however often a review runs again. */
+  CodeReviewFinished: { head: Schema.String, checks: Schema.Array(Check) },
   ReviewSubmitted: { author: Schema.String, state: Review.fields.state },
   ThreadOpened: { thread: Schema.String, author: Schema.String },
   ThreadResolved: { thread: Schema.String },
@@ -212,6 +225,10 @@ const changesWhileOpen = (before: Open, after: Open): ReadonlyArray<Change> => {
     found.push(Change.cases.CiFinished.make({ head: after.head, failed: after.ci.failed }))
   }
 
+  if (after.reviewed === true && (sameHead ? before.reviewed : false) === false) {
+    found.push(Change.cases.CodeReviewFinished.make({ head: after.head, checks: after.reviewChecks }))
+  }
+
   const seenReviews = new Set(before.reviews.map((review) => review.id))
 
   for (const review of after.reviews) {
@@ -269,6 +286,7 @@ export const attention = (relation: Relation, change: Change, status: WorkStatus
           failed.length > 0 || status !== "agent-working" ? ("act" as const) : ("screen" as const),
         ReviewSubmitted: ({ state }) =>
           state === "changes_requested" || state === "commented" ? ("act" as const) : ("screen" as const),
+        CodeReviewFinished: () => "act" as const,
         ThreadOpened: () => "act" as const,
         ThreadResolved: () => "note" as const,
         Conflicting: () => "act" as const,
@@ -299,6 +317,8 @@ export const describe = (change: Change): string =>
     HeadMoved: ({ head }) => `The head moved to ${short(head)}.`,
     CiFailing: ({ head, failed }) =>
       `CI is failing on ${short(head)} while other checks still run: ${failed.join(", ")}.`,
+    CodeReviewFinished: ({ head, checks }) =>
+      `Code review finished on ${short(head)}: ${checks.map((check) => `${check.name} ${check.state === "failure" ? "failed" : "passed"}`).join(", ")}.`,
     CiFinished: ({ head, failed }) =>
       failed.length === 0
         ? `CI passed on ${short(head)}.`

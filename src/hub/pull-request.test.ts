@@ -22,7 +22,12 @@ const facts = (over: Partial<PullRequestFacts> = {}): PullRequestFacts => ({
   ...over,
 })
 
-const check = (name: string, state: Check["state"], required = true): Check => ({ name, state, required })
+const check = (name: string, state: Check["state"], required = true, review = false): Check => ({
+  name,
+  state,
+  required,
+  review,
+})
 
 /** The changes each observation produces, in order, starting from a pull request nobody has seen. */
 const observe = (...observations: ReadonlyArray<PullRequestFacts>) =>
@@ -143,4 +148,21 @@ test("a check that runs again on the same head reports nothing, unless it change
   )
 
   expect(seen).toEqual([[], ["CiFinished"], [], [], [], ["CiFinished"]])
+})
+
+test("a head's code review is told once, when its last review check ends, however often a review runs again", async () => {
+  const ci = check("ci", "success")
+  const claude = (state: Check["state"]) => check("Claude Code Review", state, false, true)
+  const bugbot = (state: Check["state"]) => check("Cursor Bugbot", state, false, true)
+
+  const seen = await observe(
+    facts({ checks: [ci, claude("pending"), bugbot("pending")] }),
+    facts({ checks: [ci, claude("success"), bugbot("pending")] }),
+    facts({ checks: [ci, claude("success"), bugbot("success")] }),
+    facts({ checks: [ci, claude("pending"), bugbot("success")] }),
+    facts({ checks: [ci, claude("success"), bugbot("success")] }),
+    facts({ head: "bbb", checks: [ci, claude("success"), bugbot("failure")] }),
+  )
+
+  expect(seen).toEqual([[], [], ["CodeReviewFinished"], [], [], ["HeadMoved", "CiFinished", "CodeReviewFinished"]])
 })
